@@ -113,7 +113,7 @@ jobs:
             if [[ "$runner" == *"arm"* ]]; then
               RUNNER_ARCH="ARM64"
             fi
-            GITHUB_OUTPUT=/tmp/vars_${runner}.txt ./gha/ci/gha-extract-docker-vars.sh
+            GITHUB_OUTPUT=/tmp/vars_${runner}.txt ./gha/ci/github/extract-docker-vars.sh
             image=$(grep "^image=" /tmp/vars_${runner}.txt | cut -d'=' -f2)
             tag=$(grep "^tag=" /tmp/vars_${runner}.txt | cut -d'=' -f2)
             platform=$(grep "^platform=" /tmp/vars_${runner}.txt | cut -d'=' -f2)
