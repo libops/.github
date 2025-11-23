@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: validate input
         run: |
-          regex='^([A-Za-z.\/\-]+)?$'
+          regex='^([A-Za-z0-9\.\/\-]+)?$'
           if [[ "${{ inputs.image }}" =~ $regex ]]; then
             echo "Valid docker image name"
           else
