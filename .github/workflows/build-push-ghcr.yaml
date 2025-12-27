@@ -71,6 +71,8 @@ jobs:
           push: true
           cache-from: ${{ steps.vars.outputs.cache-from }}
           cache-to: ${{ steps.vars.outputs.cache-to }}
+          build-args: |
+            GIT_BRANCH=${{ steps.vars.outputs.tag }}
           tags: |
             ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.tag }}-${{ steps.vars.outputs.platform }}
       - name: record image tag
