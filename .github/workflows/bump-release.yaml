@@ -1,0 +1,54 @@
+name: bump and release
+on:
+  workflow_call:
+    inputs:
+      workflow_file:
+        description: "Optional workflow file to run with gh workflow"
+        required: false
+        type: string
+      branch:
+        description: "Optional git branch to pass to autotag"
+        required: false
+        type: string
+      prefix:
+        description: "prefix semver with a string"
+        required: false
+        type: string
+jobs:
+  bump-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: "actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8" # v6
+        with:
+          fetch-depth: 0
+
+      - name: install autotag binary
+        run: |
+          gh release download "$TAG" --repo "$REPO" --pattern "$BINARY"
+          echo "$SHA256  $BINARY" | shasum -a 256 -c
+
+          chmod +x "$BINARY"
+          sudo mv "$BINARY" /usr/bin/autotag
+        env:
+          REPO: autotag-dev/autotag
+          BINARY: autotag_linux_amd64
+          TAG: v1.4.3
+          SHA256: 85e7ec97d732800bb838085fd3f2e19b2aa2ee3a8da0db7fd0aaf4113a279f3a
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump git tag and create GitHub Release
+        run: |-
+          if [ "${{ inputs.branch }}" = "" ]; then
+            TAG=$(autotag)
+            git tag "${{ inputs.prefix }}$TAG" || echo continue
+          else
+            TAG=$(autotag -b "${{ inputs.branch }}")
+          fi
+          git push origin "${{ inputs.prefix }}$TAG"
+          gh release create "${{ inputs.prefix }}$TAG" --title "${{ inputs.prefix }}$TAG" --generate-notes
+          if [ "${{ inputs.workflow_file }}" != "" ]; then
+            gh workflow run ${{ inputs.workflow_file }} --ref "${{ inputs.prefix }}$TAG"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
