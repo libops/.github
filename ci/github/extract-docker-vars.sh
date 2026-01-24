@@ -12,16 +12,21 @@ if [ "$RUNNER_ARCH" = "ARM64" ]; then
   PLATFORM="arm64"
 fi
 
-if [ "${DOCKER_IMAGE}" = "ghcr.io/libops/" ]; then
-  DOCKER_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+# If DOCKER_IMAGE ends with /, append the repository name
+if [[ "${DOCKER_IMAGE}" == */ ]]; then
+  REPO_NAME="${GITHUB_REPOSITORY#*/}"
+  DOCKER_IMAGE="${DOCKER_IMAGE}${REPO_NAME}"
 fi
+
+# Use GHCR for cache storage, based on the repository name
+CACHE_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
 
 CACHE_TO=""
 if [ "${TAG}" = "main" ]; then
-  CACHE_TO="type=registry,ref=$DOCKER_IMAGE:cache-$PLATFORM,mode=max"
+  CACHE_TO="type=registry,ref=$CACHE_IMAGE:cache-$PLATFORM,mode=max"
 fi
 
-CACHE_FROM="type=registry,ref=$DOCKER_IMAGE:cache-$PLATFORM"
+CACHE_FROM="type=registry,ref=$CACHE_IMAGE:cache-$PLATFORM"
 
 {
   echo "image=$DOCKER_IMAGE"
