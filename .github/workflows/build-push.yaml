@@ -11,6 +11,10 @@ on:
         required: false
         type: string
         default: "."
+      file:
+        required: false
+        type: string
+        default: "Dockerfile"
       runners:
         required: false
         type: string
@@ -99,6 +103,7 @@ jobs:
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
           push: true
           cache-from: ${{ steps.vars.outputs.cache-from }}
           cache-to: ${{ steps.vars.outputs.cache-to }}
