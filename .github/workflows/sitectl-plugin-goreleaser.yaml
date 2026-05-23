@@ -1,0 +1,88 @@
+name: sitectl-plugin-goreleaser
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        required: false
+        type: string
+        default: ">=1.26.1"
+      goreleaser-args:
+        required: false
+        type: string
+        default: "release --clean"
+      package-name:
+        required: true
+        type: string
+      sitectl-ref:
+        required: false
+        type: string
+        default: "main"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Checkout sitectl SDK
+        if: ${{ hashFiles('go.work') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "${{ inputs.sitectl-ref }}" https://github.com/libops/sitectl ../sitectl
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: ${{ inputs.goreleaser-args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_REPO }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL }}
+          service_account: ${{ vars.LIBOPS_PACKAGES_GSA }}
+          create_credentials_file: true
+
+      - name: Checkout Package Publisher
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          repository: libops/terraform-linux-packages
+          ref: main
+          path: .libops-packages
+
+      - name: Publish Linux package repository
+        shell: bash
+        working-directory: .libops-packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GCLOUD_PROJECT: ${{ vars.LIBOPS_PACKAGES_GCLOUD_PROJECT }}
+          GCS_BUCKET: ${{ vars.LIBOPS_PACKAGES_GCS_BUCKET }}
+          APTLY_GPG_KEY_ID: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_KEY_ID }}
+          APTLY_GPG_PRIVATE_KEY_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PRIVATE_KEY_SECRET }}
+          APTLY_GPG_PASSPHRASE_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET }}
+        run: |
+          set -euo pipefail
+          make package \
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            PACKAGE_NAME="${{ inputs.package-name }}" \
+            GCS_BUCKET_PREFIX="sitectl" \
+            APTLY_LABEL="sitectl" \
+            APTLY_PUBLIC_KEY_NAME="sitectl-archive-keyring" \
+            RELEASE_VERSION="${GITHUB_REF_NAME}"
