@@ -1,0 +1,304 @@
+name: sitectl-create-smoke-test
+
+on:
+  workflow_call:
+    inputs:
+      plugin:
+        description: sitectl plugin name, without the sitectl- prefix.
+        required: true
+        type: string
+      create-definition:
+        description: sitectl create definition to run.
+        required: false
+        type: string
+        default: default
+      create-args:
+        description: Extra arguments passed to sitectl create.
+        required: false
+        type: string
+        default: ""
+      checkout-path:
+        description: Path where the caller repository is checked out.
+        required: false
+        type: string
+        default: site
+      checkout-source:
+        description: Checkout source passed to sitectl create.
+        required: false
+        type: string
+        default: existing
+      project-path:
+        description: Path passed to sitectl create --path. Defaults to checkout-path for existing checkouts and generated-site for template checkouts.
+        required: false
+        type: string
+        default: ""
+      local-plugin-path:
+        description: Relative path to a checked-out local plugin module to build before running sitectl create.
+        required: false
+        type: string
+        default: ""
+      go-version:
+        description: Go version used when local-plugin-path is set.
+        required: false
+        type: string
+        default: ">=1.26.1"
+      packages:
+        description: Space-separated sitectl apt packages to install. Defaults to sitectl and sitectl-<plugin>, or just sitectl when local-plugin-path is set.
+        required: false
+        type: string
+        default: ""
+      runner:
+        description: GitHub Actions runner label.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      timeout-minutes:
+        description: Job timeout in minutes.
+        required: false
+        type: number
+        default: 90
+
+permissions:
+  contents: read
+
+jobs:
+  create:
+    name: sitectl create ${{ inputs.plugin }} ${{ inputs.create-definition }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      TERM: xterm-256color
+      GITHUB_ACTIONS: "true"
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          path: ${{ inputs.checkout-path }}
+
+      - name: Prepare smoke test inputs
+        id: smoke
+        shell: bash
+        env:
+          PLUGIN: ${{ inputs.plugin }}
+          CREATE_DEFINITION: ${{ inputs.create-definition }}
+          CREATE_ARGS: ${{ inputs.create-args }}
+          CHECKOUT_PATH: ${{ inputs.checkout-path }}
+          CHECKOUT_SOURCE: ${{ inputs.checkout-source }}
+          PROJECT_PATH: ${{ inputs.project-path }}
+          LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+
+          validate_relative_path() {
+            local name="$1"
+            local value="$2"
+            if [[ "${value}" = /* || "${value}" = *..* || ! "${value}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::Invalid ${name} input: ${value}"
+              exit 1
+            fi
+          }
+
+          if [[ ! "${PLUGIN}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Invalid plugin input: ${PLUGIN}"
+            exit 1
+          fi
+          if [[ ! "${CREATE_DEFINITION}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Invalid create-definition input: ${CREATE_DEFINITION}"
+            exit 1
+          fi
+          validate_relative_path "checkout-path" "${CHECKOUT_PATH}"
+          case "${CHECKOUT_SOURCE}" in
+            existing|template)
+              ;;
+            *)
+              echo "::error::Invalid checkout-source input: ${CHECKOUT_SOURCE}"
+              exit 1
+              ;;
+          esac
+
+          project_path="${PROJECT_PATH}"
+          if [ -z "${project_path// }" ]; then
+            if [ "${CHECKOUT_SOURCE}" = "existing" ]; then
+              project_path="${CHECKOUT_PATH}"
+            else
+              project_path="generated-site"
+            fi
+          fi
+          validate_relative_path "project-path" "${project_path}"
+
+          local_plugin_path="${LOCAL_PLUGIN_PATH}"
+          if [ -n "${local_plugin_path// }" ]; then
+            validate_relative_path "local-plugin-path" "${local_plugin_path}"
+          fi
+
+          checkout_dir="${GITHUB_WORKSPACE}/${CHECKOUT_PATH}"
+          if [ ! -d "${checkout_dir}" ]; then
+            echo "::error::Checkout path does not exist: ${checkout_dir}"
+            exit 1
+          fi
+
+          packages="${PACKAGES}"
+          if [ -z "${packages// }" ]; then
+            if [ -n "${local_plugin_path// }" ]; then
+              packages="sitectl"
+            else
+              packages="sitectl sitectl-${PLUGIN}"
+            fi
+          fi
+
+          project_dir="${GITHUB_WORKSPACE}/${project_path}"
+          if [ "${CHECKOUT_SOURCE}" = "existing" ] && [ ! -d "${project_dir}" ]; then
+            echo "::error::Project path does not exist for checkout-source=existing: ${project_dir}"
+            exit 1
+          fi
+
+          local_plugin_dir=""
+          if [ -n "${local_plugin_path// }" ]; then
+            local_plugin_dir="${GITHUB_WORKSPACE}/${local_plugin_path}"
+            if [ ! -d "${local_plugin_dir}" ]; then
+              echo "::error::Local plugin path does not exist: ${local_plugin_dir}"
+              exit 1
+            fi
+          fi
+          diagnostics_suffix="$(
+            printf '%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" \
+              | sha256sum \
+              | cut -c1-12
+          )"
+
+          {
+            echo "packages=${packages}"
+            echo "checkout-source=${CHECKOUT_SOURCE}"
+            echo "project-dir=${project_dir}"
+            echo "local-plugin-dir=${local_plugin_dir}"
+            echo "local-bin-dir=${RUNNER_TEMP}/sitectl-local-bin"
+            echo "diagnostics-artifact-name=sitectl-create-${PLUGIN}-${CREATE_DEFINITION}-${diagnostics_suffix}-docker-diagnostics"
+            echo "diagnostics-dir=${RUNNER_TEMP}/sitectl-create-diagnostics-${diagnostics_suffix}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install sitectl
+        uses: libops/.github/.github/actions/install-sitectl@main
+        with:
+          packages: ${{ steps.smoke.outputs.packages }}
+
+      - name: Set up Go
+        if: ${{ inputs.local-plugin-path != '' }}
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache-dependency-path: ${{ inputs.local-plugin-path }}/go.sum
+
+      - name: Build local sitectl plugin
+        if: ${{ inputs.local-plugin-path != '' }}
+        shell: bash
+        env:
+          PLUGIN: ${{ inputs.plugin }}
+          LOCAL_PLUGIN_DIR: ${{ steps.smoke.outputs.local-plugin-dir }}
+          LOCAL_BIN_DIR: ${{ steps.smoke.outputs.local-bin-dir }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${LOCAL_BIN_DIR}"
+          (
+            cd "${LOCAL_PLUGIN_DIR}"
+            go build -o "${LOCAL_BIN_DIR}/sitectl-${PLUGIN}" .
+          )
+          echo "${LOCAL_BIN_DIR}" >> "${GITHUB_PATH}"
+
+      - name: Setup git identity
+        shell: bash
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+      - name: Show create definitions
+        shell: bash
+        run: sitectl create list
+
+      - name: Run sitectl create smoke test
+        shell: bash
+        env:
+          PLUGIN: ${{ inputs.plugin }}
+          CREATE_DEFINITION: ${{ inputs.create-definition }}
+          CREATE_ARGS: ${{ inputs.create-args }}
+          CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
+          PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
+        run: |
+          set -euo pipefail
+
+          extra_args=()
+          if [ -n "${CREATE_ARGS}" ]; then
+            read -r -a extra_args <<< "${CREATE_ARGS}"
+          fi
+
+          sitectl create "${PLUGIN}/${CREATE_DEFINITION}" \
+            --path "${PROJECT_DIR}" \
+            --type local \
+            --checkout-source "${CHECKOUT_SOURCE}" \
+            --default-context \
+            "${extra_args[@]}"
+
+          sitectl healthcheck
+
+      - name: Collect docker diagnostics
+        if: ${{ failure() && steps.smoke.outcome == 'success' }}
+        shell: bash
+        env:
+          PLUGIN: ${{ inputs.plugin }}
+          CREATE_DEFINITION: ${{ inputs.create-definition }}
+          CREATE_ARGS: ${{ inputs.create-args }}
+          CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
+          PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
+          DIAGNOSTICS_DIR: ${{ steps.smoke.outputs.diagnostics-dir }}
+        run: |
+          set +e
+          mkdir -p "${DIAGNOSTICS_DIR}"
+          {
+            echo "plugin=${PLUGIN}"
+            echo "create-definition=${CREATE_DEFINITION}"
+            echo "create-args=${CREATE_ARGS}"
+            echo "checkout-source=${CHECKOUT_SOURCE}"
+            echo "project-dir=${PROJECT_DIR}"
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "${DIAGNOSTICS_DIR}/context.txt"
+
+          if [ -z "${PROJECT_DIR}" ] || [ ! -d "${PROJECT_DIR}" ]; then
+            exit 0
+          fi
+
+          cd "${PROJECT_DIR}"
+          {
+            echo "$ docker compose config"
+            docker compose config
+          } > "${DIAGNOSTICS_DIR}/docker-compose-config.txt" 2>&1
+          {
+            echo "$ docker compose ps -a"
+            docker compose ps -a
+          } > "${DIAGNOSTICS_DIR}/docker-compose-ps.txt" 2>&1
+          {
+            echo "$ docker compose logs --tail 1000 --timestamps --no-color"
+            docker compose logs --tail 1000 --timestamps --no-color
+          } > "${DIAGNOSTICS_DIR}/docker-compose-logs.txt" 2>&1
+
+      - name: Upload docker diagnostics
+        if: ${{ failure() && steps.smoke.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.smoke.outputs.diagnostics-artifact-name }}
+          path: ${{ steps.smoke.outputs.diagnostics-dir }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Cleanup compose stack
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
+        run: |
+          set +e
+          if [ -z "${PROJECT_DIR}" ] || [ ! -d "${PROJECT_DIR}" ]; then
+            exit 0
+          fi
+          cd "${PROJECT_DIR}"
+          docker compose down -v --remove-orphans
