@@ -17,6 +17,16 @@ on:
         required: false
         type: string
         default: ""
+      run-verify:
+        description: Run sitectl verify after sitectl healthcheck.
+        required: false
+        type: boolean
+        default: false
+      verify-args:
+        description: Extra arguments passed to sitectl verify.
+        required: false
+        type: string
+        default: ""
       checkout-path:
         description: Path where the caller repository is checked out.
         required: false
@@ -37,6 +47,21 @@ on:
         required: false
         type: string
         default: ""
+      sitectl-repository:
+        description: Optional repository to checkout and build as the sitectl host CLI, for example libops/sitectl.
+        required: false
+        type: string
+        default: ""
+      sitectl-ref:
+        description: Git ref for sitectl-repository.
+        required: false
+        type: string
+        default: main
+      sitectl-path:
+        description: Checkout path for sitectl-repository.
+        required: false
+        type: string
+        default: sitectl-source
       go-version:
         description: Go version used when local-plugin-path is set.
         required: false
@@ -82,10 +107,14 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          RUN_VERIFY: ${{ inputs.run-verify }}
+          VERIFY_ARGS: ${{ inputs.verify-args }}
           CHECKOUT_PATH: ${{ inputs.checkout-path }}
           CHECKOUT_SOURCE: ${{ inputs.checkout-source }}
           PROJECT_PATH: ${{ inputs.project-path }}
           LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
+          SITECTL_REPOSITORY: ${{ inputs.sitectl-repository }}
+          SITECTL_PATH: ${{ inputs.sitectl-path }}
           PACKAGES: ${{ inputs.packages }}
         run: |
           set -euo pipefail
@@ -131,6 +160,10 @@ jobs:
           if [ -n "${local_plugin_path// }" ]; then
             validate_relative_path "local-plugin-path" "${local_plugin_path}"
           fi
+          sitectl_path="${SITECTL_PATH}"
+          if [ -n "${SITECTL_REPOSITORY// }" ]; then
+            validate_relative_path "sitectl-path" "${sitectl_path}"
+          fi
 
           checkout_dir="${GITHUB_WORKSPACE}/${CHECKOUT_PATH}"
           if [ ! -d "${checkout_dir}" ]; then
@@ -140,7 +173,7 @@ jobs:
 
           packages="${PACKAGES}"
           if [ -z "${packages// }" ]; then
-            if [ -n "${local_plugin_path// }" ]; then
+            if [ -n "${local_plugin_path// }" ] || [ -n "${SITECTL_REPOSITORY// }" ]; then
               packages="sitectl"
             else
               packages="sitectl sitectl-${PLUGIN}"
@@ -161,8 +194,18 @@ jobs:
               exit 1
             fi
           fi
+          sitectl_source_dir=""
+          if [ -n "${SITECTL_REPOSITORY// }" ]; then
+            sitectl_source_dir="${GITHUB_WORKSPACE}/${sitectl_path}"
+          fi
+          go_cache_dependency_path=""
+          if [ -n "${local_plugin_path// }" ]; then
+            go_cache_dependency_path="${local_plugin_path}/go.sum"
+          elif [ -n "${SITECTL_REPOSITORY// }" ]; then
+            go_cache_dependency_path="${sitectl_path}/go.sum"
+          fi
           diagnostics_suffix="$(
-            printf '%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" \
+            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
               | sha256sum \
               | cut -c1-12
           )"
@@ -172,10 +215,20 @@ jobs:
             echo "checkout-source=${CHECKOUT_SOURCE}"
             echo "project-dir=${project_dir}"
             echo "local-plugin-dir=${local_plugin_dir}"
+            echo "sitectl-source-dir=${sitectl_source_dir}"
+            echo "go-cache-dependency-path=${go_cache_dependency_path}"
             echo "local-bin-dir=${RUNNER_TEMP}/sitectl-local-bin"
             echo "diagnostics-artifact-name=sitectl-create-${PLUGIN}-${CREATE_DEFINITION}-${diagnostics_suffix}-docker-diagnostics"
             echo "diagnostics-dir=${RUNNER_TEMP}/sitectl-create-diagnostics-${diagnostics_suffix}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout sitectl source
+        if: ${{ inputs.sitectl-repository != '' }}
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          repository: ${{ inputs.sitectl-repository }}
+          ref: ${{ inputs.sitectl-ref }}
+          path: ${{ inputs.sitectl-path }}
 
       - name: Install sitectl
         uses: libops/.github/.github/actions/install-sitectl@main
@@ -183,11 +236,43 @@ jobs:
           packages: ${{ steps.smoke.outputs.packages }}
 
       - name: Set up Go
-        if: ${{ inputs.local-plugin-path != '' }}
+        if: ${{ inputs.local-plugin-path != '' || inputs.sitectl-repository != '' }}
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ inputs.go-version }}
-          cache-dependency-path: ${{ inputs.local-plugin-path }}/go.sum
+          cache-dependency-path: ${{ steps.smoke.outputs.go-cache-dependency-path }}
+
+      - name: Build local sitectl
+        if: ${{ inputs.sitectl-repository != '' }}
+        shell: bash
+        env:
+          SITECTL_SOURCE_DIR: ${{ steps.smoke.outputs.sitectl-source-dir }}
+          LOCAL_BIN_DIR: ${{ steps.smoke.outputs.local-bin-dir }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${LOCAL_BIN_DIR}"
+          (
+            cd "${SITECTL_SOURCE_DIR}"
+            go build -o "${LOCAL_BIN_DIR}/sitectl" .
+          )
+          echo "${LOCAL_BIN_DIR}" >> "${GITHUB_PATH}"
+
+      - name: Prepare local Go workspace
+        if: ${{ inputs.local-plugin-path != '' && inputs.sitectl-repository != '' }}
+        shell: bash
+        env:
+          LOCAL_PLUGIN_DIR: ${{ steps.smoke.outputs.local-plugin-dir }}
+          SITECTL_SOURCE_DIR: ${{ steps.smoke.outputs.sitectl-source-dir }}
+        run: |
+          set -euo pipefail
+
+          (
+            cd "${GITHUB_WORKSPACE}"
+            rm -f go.work
+            go work init "${SITECTL_SOURCE_DIR}" "${LOCAL_PLUGIN_DIR}"
+            go work edit -fmt
+          )
 
       - name: Build local sitectl plugin
         if: ${{ inputs.local-plugin-path != '' }}
@@ -241,6 +326,23 @@ jobs:
 
           sitectl healthcheck
 
+      - name: Run sitectl verify
+        if: ${{ inputs.run-verify }}
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
+          VERIFY_ARGS: ${{ inputs.verify-args }}
+        run: |
+          set -euo pipefail
+
+          verify_args=()
+          if [ -n "${VERIFY_ARGS}" ]; then
+            read -r -a verify_args <<< "${VERIFY_ARGS}"
+          fi
+
+          cd "${PROJECT_DIR}"
+          sitectl verify "${verify_args[@]}"
+
       - name: Collect docker diagnostics
         if: ${{ failure() && steps.smoke.outcome == 'success' }}
         shell: bash
@@ -248,6 +350,8 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          RUN_VERIFY: ${{ inputs.run-verify }}
+          VERIFY_ARGS: ${{ inputs.verify-args }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
           PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
           DIAGNOSTICS_DIR: ${{ steps.smoke.outputs.diagnostics-dir }}
@@ -258,6 +362,8 @@ jobs:
             echo "plugin=${PLUGIN}"
             echo "create-definition=${CREATE_DEFINITION}"
             echo "create-args=${CREATE_ARGS}"
+            echo "run-verify=${RUN_VERIFY}"
+            echo "verify-args=${VERIFY_ARGS}"
             echo "checkout-source=${CHECKOUT_SOURCE}"
             echo "project-dir=${PROJECT_DIR}"
             echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
