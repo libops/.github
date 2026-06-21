@@ -17,6 +17,16 @@ on:
         required: false
         type: string
         default: ""
+      buildkit-tag:
+        description: Buildkit runtime tag passed to sitectl create --buildkit-tag.
+        required: false
+        type: string
+        default: ""
+      buildkit-repository:
+        description: Container repository passed to sitectl create --buildkit-repository.
+        required: false
+        type: string
+        default: libops
       run-verify:
         description: Run sitectl verify after sitectl healthcheck.
         required: false
@@ -107,6 +117,8 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          BUILDKIT_TAG: ${{ inputs.buildkit-tag }}
+          BUILDKIT_REPOSITORY: ${{ inputs.buildkit-repository }}
           RUN_VERIFY: ${{ inputs.run-verify }}
           VERIFY_ARGS: ${{ inputs.verify-args }}
           CHECKOUT_PATH: ${{ inputs.checkout-path }}
@@ -134,6 +146,14 @@ jobs:
           fi
           if [[ ! "${CREATE_DEFINITION}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "::error::Invalid create-definition input: ${CREATE_DEFINITION}"
+            exit 1
+          fi
+          if [ -n "${BUILDKIT_TAG// }" ] && [[ ! "${BUILDKIT_TAG}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid buildkit-tag input: ${BUILDKIT_TAG}"
+            exit 1
+          fi
+          if [[ ! "${BUILDKIT_REPOSITORY}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::Invalid buildkit-repository input: ${BUILDKIT_REPOSITORY}"
             exit 1
           fi
           validate_relative_path "checkout-path" "${CHECKOUT_PATH}"
@@ -205,7 +225,7 @@ jobs:
             go_cache_dependency_path="${sitectl_path}/go.sum"
           fi
           diagnostics_suffix="$(
-            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
+            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${BUILDKIT_TAG}" "${BUILDKIT_REPOSITORY}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
               | sha256sum \
               | cut -c1-12
           )"
@@ -307,14 +327,20 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          BUILDKIT_TAG: ${{ inputs.buildkit-tag }}
+          BUILDKIT_REPOSITORY: ${{ inputs.buildkit-repository }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
           PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
         run: |
           set -euo pipefail
 
           extra_args=()
+          if [ -n "${BUILDKIT_TAG// }" ]; then
+            extra_args+=(--buildkit-tag "${BUILDKIT_TAG}" --buildkit-repository "${BUILDKIT_REPOSITORY}")
+          fi
           if [ -n "${CREATE_ARGS}" ]; then
-            read -r -a extra_args <<< "${CREATE_ARGS}"
+            read -r -a create_args <<< "${CREATE_ARGS}"
+            extra_args+=("${create_args[@]}")
           fi
 
           sitectl create "${PLUGIN}/${CREATE_DEFINITION}" \
@@ -350,6 +376,8 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          BUILDKIT_TAG: ${{ inputs.buildkit-tag }}
+          BUILDKIT_REPOSITORY: ${{ inputs.buildkit-repository }}
           RUN_VERIFY: ${{ inputs.run-verify }}
           VERIFY_ARGS: ${{ inputs.verify-args }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
@@ -362,6 +390,8 @@ jobs:
             echo "plugin=${PLUGIN}"
             echo "create-definition=${CREATE_DEFINITION}"
             echo "create-args=${CREATE_ARGS}"
+            echo "buildkit-tag=${BUILDKIT_TAG}"
+            echo "buildkit-repository=${BUILDKIT_REPOSITORY}"
             echo "run-verify=${RUN_VERIFY}"
             echo "verify-args=${VERIFY_ARGS}"
             echo "checkout-source=${CHECKOUT_SOURCE}"
