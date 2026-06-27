@@ -17,16 +17,16 @@ on:
         required: false
         type: string
         default: ""
-      buildkit-tag:
-        description: Buildkit runtime tag passed to sitectl create --buildkit-tag.
+      image-tags:
+        description: Space-separated image tag overrides passed to sitectl create as --tag SERVICE=TAG.
         required: false
         type: string
         default: ""
-      buildkit-repository:
-        description: Container repository passed to sitectl create --buildkit-repository.
+      images:
+        description: Space-separated exact image overrides passed to sitectl create as --image SERVICE=IMAGE.
         required: false
         type: string
-        default: libops
+        default: ""
       run-verify:
         description: Run sitectl verify after sitectl healthcheck.
         required: false
@@ -117,8 +117,8 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
-          BUILDKIT_TAG: ${{ inputs.buildkit-tag }}
-          BUILDKIT_REPOSITORY: ${{ inputs.buildkit-repository }}
+          IMAGE_TAGS: ${{ inputs.image-tags }}
+          IMAGES: ${{ inputs.images }}
           RUN_VERIFY: ${{ inputs.run-verify }}
           VERIFY_ARGS: ${{ inputs.verify-args }}
           CHECKOUT_PATH: ${{ inputs.checkout-path }}
@@ -148,14 +148,22 @@ jobs:
             echo "::error::Invalid create-definition input: ${CREATE_DEFINITION}"
             exit 1
           fi
-          if [ -n "${BUILDKIT_TAG// }" ] && [[ ! "${BUILDKIT_TAG}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
-            echo "::error::Invalid buildkit-tag input: ${BUILDKIT_TAG}"
-            exit 1
-          fi
-          if [[ ! "${BUILDKIT_REPOSITORY}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
-            echo "::error::Invalid buildkit-repository input: ${BUILDKIT_REPOSITORY}"
-            exit 1
-          fi
+          validate_assignments() {
+            local name="$1"
+            local value="$2"
+            local value_pattern="$3"
+            local item service assigned
+            for item in ${value}; do
+              service="${item%%=*}"
+              assigned="${item#*=}"
+              if [ "${service}" = "${item}" ] || [[ ! "${service}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [[ ! "${assigned}" =~ ${value_pattern} ]]; then
+                echo "::error::Invalid ${name} input item: ${item}"
+                exit 1
+              fi
+            done
+          }
+          validate_assignments "image-tags" "${IMAGE_TAGS}" '^[A-Za-z0-9_.:-]+$'
+          validate_assignments "images" "${IMAGES}" '^[A-Za-z0-9][A-Za-z0-9._/:@-]+$'
           validate_relative_path "checkout-path" "${CHECKOUT_PATH}"
           case "${CHECKOUT_SOURCE}" in
             existing|template)
@@ -225,7 +233,7 @@ jobs:
             go_cache_dependency_path="${sitectl_path}/go.sum"
           fi
           diagnostics_suffix="$(
-            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${BUILDKIT_TAG}" "${BUILDKIT_REPOSITORY}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
+            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
               | sha256sum \
               | cut -c1-12
           )"
@@ -327,17 +335,20 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
-          BUILDKIT_TAG: ${{ inputs.buildkit-tag }}
-          BUILDKIT_REPOSITORY: ${{ inputs.buildkit-repository }}
+          IMAGE_TAGS: ${{ inputs.image-tags }}
+          IMAGES: ${{ inputs.images }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
           PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
         run: |
           set -euo pipefail
 
           extra_args=()
-          if [ -n "${BUILDKIT_TAG// }" ]; then
-            extra_args+=(--buildkit-tag "${BUILDKIT_TAG}" --buildkit-repository "${BUILDKIT_REPOSITORY}")
-          fi
+          for override in ${IMAGE_TAGS}; do
+            extra_args+=(--tag "${override}")
+          done
+          for override in ${IMAGES}; do
+            extra_args+=(--image "${override}")
+          done
           if [ -n "${CREATE_ARGS}" ]; then
             read -r -a create_args <<< "${CREATE_ARGS}"
             extra_args+=("${create_args[@]}")
@@ -376,8 +387,8 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
-          BUILDKIT_TAG: ${{ inputs.buildkit-tag }}
-          BUILDKIT_REPOSITORY: ${{ inputs.buildkit-repository }}
+          IMAGE_TAGS: ${{ inputs.image-tags }}
+          IMAGES: ${{ inputs.images }}
           RUN_VERIFY: ${{ inputs.run-verify }}
           VERIFY_ARGS: ${{ inputs.verify-args }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
@@ -390,8 +401,8 @@ jobs:
             echo "plugin=${PLUGIN}"
             echo "create-definition=${CREATE_DEFINITION}"
             echo "create-args=${CREATE_ARGS}"
-            echo "buildkit-tag=${BUILDKIT_TAG}"
-            echo "buildkit-repository=${BUILDKIT_REPOSITORY}"
+            echo "image-tags=${IMAGE_TAGS}"
+            echo "images=${IMAGES}"
             echo "run-verify=${RUN_VERIFY}"
             echo "verify-args=${VERIFY_ARGS}"
             echo "checkout-source=${CHECKOUT_SOURCE}"
