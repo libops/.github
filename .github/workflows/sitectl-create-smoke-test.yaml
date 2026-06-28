@@ -361,7 +361,18 @@ jobs:
             --default-context \
             "${extra_args[@]}"
 
-          sitectl healthcheck
+          if [ "${PLUGIN}" = "isle" ]; then
+            (
+              cd "${PROJECT_DIR}"
+              sitectl traefik tls http
+              sitectl compose up
+            )
+          fi
+
+          (
+            cd "${PROJECT_DIR}"
+            sitectl healthcheck
+          )
 
       - name: Run sitectl verify
         if: ${{ inputs.run-verify }}
