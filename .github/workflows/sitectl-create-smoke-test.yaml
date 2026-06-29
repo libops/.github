@@ -111,7 +111,7 @@ jobs:
       GITHUB_ACTIONS: "true"
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           path: ${{ inputs.checkout-path }}
 
@@ -258,7 +258,7 @@ jobs:
 
       - name: Checkout sitectl source
         if: ${{ inputs.sitectl-repository != '' }}
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: ${{ inputs.sitectl-repository }}
           ref: ${{ inputs.sitectl-ref }}
@@ -271,7 +271,7 @@ jobs:
 
       - name: Set up Go
         if: ${{ inputs.local-plugin-path != '' || inputs.sitectl-repository != '' }}
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ inputs.go-version }}
           cache-dependency-path: ${{ steps.smoke.outputs.go-cache-dependency-path }}
