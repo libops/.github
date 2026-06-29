@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: ""
+      template-repo:
+        description: Template repository passed to sitectl create as --template-repo when checkout-source=template.
+        required: false
+        type: string
+        default: ""
       image-tags:
         description: Space-separated image tag overrides passed to sitectl create as --tag SERVICE=TAG.
         required: false
@@ -117,6 +122,7 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          TEMPLATE_REPO: ${{ inputs.template-repo }}
           IMAGE_TAGS: ${{ inputs.image-tags }}
           IMAGES: ${{ inputs.images }}
           RUN_VERIFY: ${{ inputs.run-verify }}
@@ -233,7 +239,7 @@ jobs:
             go_cache_dependency_path="${sitectl_path}/go.sum"
           fi
           diagnostics_suffix="$(
-            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
+            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${TEMPLATE_REPO}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
               | sha256sum \
               | cut -c1-12
           )"
@@ -335,6 +341,7 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          TEMPLATE_REPO: ${{ inputs.template-repo }}
           IMAGE_TAGS: ${{ inputs.image-tags }}
           IMAGES: ${{ inputs.images }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
@@ -349,6 +356,9 @@ jobs:
           for override in ${IMAGES}; do
             extra_args+=(--image "${override}")
           done
+          if [ -n "${TEMPLATE_REPO// }" ]; then
+            extra_args+=(--template-repo "${TEMPLATE_REPO}")
+          fi
           if [ -n "${CREATE_ARGS}" ]; then
             read -r -a create_args <<< "${CREATE_ARGS}"
             extra_args+=("${create_args[@]}")
@@ -398,6 +408,7 @@ jobs:
           PLUGIN: ${{ inputs.plugin }}
           CREATE_DEFINITION: ${{ inputs.create-definition }}
           CREATE_ARGS: ${{ inputs.create-args }}
+          TEMPLATE_REPO: ${{ inputs.template-repo }}
           IMAGE_TAGS: ${{ inputs.image-tags }}
           IMAGES: ${{ inputs.images }}
           RUN_VERIFY: ${{ inputs.run-verify }}
@@ -412,6 +423,7 @@ jobs:
             echo "plugin=${PLUGIN}"
             echo "create-definition=${CREATE_DEFINITION}"
             echo "create-args=${CREATE_ARGS}"
+            echo "template-repo=${TEMPLATE_REPO}"
             echo "image-tags=${IMAGE_TAGS}"
             echo "images=${IMAGES}"
             echo "run-verify=${RUN_VERIFY}"
