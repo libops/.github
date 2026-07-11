@@ -48,7 +48,9 @@ jobs:
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
-          version: latest
+          # This binary receives the Homebrew publication token. Review and
+          # advance the exact release deliberately instead of executing latest.
+          version: v2.17.0
           args: ${{ inputs.goreleaser-args }}
         env:
           GITHUB_TOKEN: ${{ secrets.HOMEBREW_REPO }}
@@ -64,7 +66,8 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           repository: libops/terraform-linux-packages
-          ref: main
+          # This checkout runs with GCP publication credentials; keep it immutable.
+          ref: 6f39b1c35f31c258f34af155dd1b9c2046238558 # main
           path: .libops-packages
 
       - name: Publish Linux package repository
