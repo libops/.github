@@ -265,7 +265,7 @@ jobs:
           path: ${{ inputs.sitectl-path }}
 
       - name: Install sitectl
-        uses: libops/.github/.github/actions/install-sitectl@main
+        uses: libops/.github/.github/actions/install-sitectl@3ef8469c16c40842cc1b0b9195df2850ad8e616f # main
         with:
           packages: ${{ steps.smoke.outputs.packages }}
 

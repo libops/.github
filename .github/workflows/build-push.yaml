@@ -114,7 +114,7 @@ jobs:
       - name: record image tag
         id: record-tag
         run: |
-          echo "tag=${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.tag }}-${{ steps.vars.outputs.platform }}" >> $GITHUB_OUTPUT
+          echo "tag=${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.tag }}-${{ steps.vars.outputs.platform }}" >> "$GITHUB_OUTPUT"
   merge:
     runs-on: ubuntu-24.04
     needs:
@@ -169,23 +169,23 @@ jobs:
 
       - name: merge platform images
         run: |
-          tags=""
+          tags=()
           mapfile -t runners < <(echo '${{ inputs.runners }}' | jq -r '.[]')
           for runner in "${runners[@]}"; do
-            RUNNER_ARCH="X64"
+            runner_arch="X64"
             if [[ "$runner" == *"arm"* ]]; then
-              RUNNER_ARCH="ARM64"
+              runner_arch="ARM64"
             fi
-            GITHUB_OUTPUT=/tmp/vars_${runner}.txt ./gha/ci/github/extract-docker-vars.sh
-            image=$(grep "^image=" /tmp/vars_${runner}.txt | cut -d'=' -f2)
-            tag=$(grep "^tag=" /tmp/vars_${runner}.txt | cut -d'=' -f2)
-            platform=$(grep "^platform=" /tmp/vars_${runner}.txt | cut -d'=' -f2)
+            RUNNER_ARCH="${runner_arch}" GITHUB_OUTPUT="/tmp/vars_${runner}.txt" ./gha/ci/github/extract-docker-vars.sh
+            image=$(grep "^image=" "/tmp/vars_${runner}.txt" | cut -d'=' -f2)
+            tag=$(grep "^tag=" "/tmp/vars_${runner}.txt" | cut -d'=' -f2)
+            platform=$(grep "^platform=" "/tmp/vars_${runner}.txt" | cut -d'=' -f2)
 
-            tags="$tags ${image}:${tag}-${platform}"
+            tags+=("${image}:${tag}-${platform}")
           done
 
           docker buildx imagetools create \
             -t "${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.tag }}" \
-            $tags
+            "${tags[@]}"
         env:
           DOCKER_IMAGE: ${{ steps.vars.outputs.image }}
