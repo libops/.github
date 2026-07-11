@@ -67,7 +67,7 @@ jobs:
         with:
           repository: libops/terraform-linux-packages
           # This checkout runs with GCP publication credentials; keep it immutable.
-          ref: a2d18f397db39065962c02f37122856eddad11d1 # main
+          ref: 431c745c7b0cbc989b2e7a38123fd4957eb2371e # main
           path: .libops-packages
 
       - name: Publish Linux package repository
