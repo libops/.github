@@ -62,6 +62,16 @@ on:
         required: false
         type: string
         default: ""
+      local-plugin-repository:
+        description: Optional plugin repository to checkout at local-plugin-path.
+        required: false
+        type: string
+        default: ""
+      local-plugin-ref:
+        description: Git ref for local-plugin-repository.
+        required: false
+        type: string
+        default: main
       sitectl-repository:
         description: Optional repository to checkout and build as the sitectl host CLI, for example libops/sitectl.
         required: false
@@ -115,6 +125,33 @@ jobs:
         with:
           path: ${{ inputs.checkout-path }}
 
+      - name: Validate local plugin checkout inputs
+        if: ${{ inputs.local-plugin-repository != '' }}
+        shell: bash
+        env:
+          LOCAL_PLUGIN_REPOSITORY: ${{ inputs.local-plugin-repository }}
+          LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${LOCAL_PLUGIN_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid local-plugin-repository input: ${LOCAL_PLUGIN_REPOSITORY}"
+            exit 1
+          fi
+          if [[ -z "${LOCAL_PLUGIN_PATH// }" || "${LOCAL_PLUGIN_PATH}" = /* || "${LOCAL_PLUGIN_PATH}" = *..* || ! "${LOCAL_PLUGIN_PATH}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid local-plugin-path input: ${LOCAL_PLUGIN_PATH}"
+            exit 1
+          fi
+
+      - name: Checkout local plugin source
+        if: ${{ inputs.local-plugin-repository != '' }}
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          repository: ${{ inputs.local-plugin-repository }}
+          ref: ${{ inputs.local-plugin-ref }}
+          path: ${{ inputs.local-plugin-path }}
+          persist-credentials: false
+
       - name: Prepare smoke test inputs
         id: smoke
         shell: bash
@@ -131,7 +168,10 @@ jobs:
           CHECKOUT_SOURCE: ${{ inputs.checkout-source }}
           PROJECT_PATH: ${{ inputs.project-path }}
           LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
+          LOCAL_PLUGIN_REPOSITORY: ${{ inputs.local-plugin-repository }}
+          LOCAL_PLUGIN_REF: ${{ inputs.local-plugin-ref }}
           SITECTL_REPOSITORY: ${{ inputs.sitectl-repository }}
+          SITECTL_REF: ${{ inputs.sitectl-ref }}
           SITECTL_PATH: ${{ inputs.sitectl-path }}
           PACKAGES: ${{ inputs.packages }}
         run: |
@@ -235,11 +275,15 @@ jobs:
           go_cache_dependency_path=""
           if [ -n "${local_plugin_path// }" ]; then
             go_cache_dependency_path="${local_plugin_path}/go.sum"
-          elif [ -n "${SITECTL_REPOSITORY// }" ]; then
-            go_cache_dependency_path="${sitectl_path}/go.sum"
+          fi
+          if [ -n "${SITECTL_REPOSITORY// }" ]; then
+            if [ -n "${go_cache_dependency_path}" ]; then
+              go_cache_dependency_path+=$'\n'
+            fi
+            go_cache_dependency_path+="${sitectl_path}/go.sum"
           fi
           diagnostics_suffix="$(
-            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${TEMPLATE_REPO}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${SITECTL_REPOSITORY}" \
+            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${TEMPLATE_REPO}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${LOCAL_PLUGIN_REPOSITORY}" "${LOCAL_PLUGIN_REF}" "${SITECTL_REPOSITORY}" "${SITECTL_REF}" \
               | sha256sum \
               | cut -c1-12
           )"
@@ -250,7 +294,9 @@ jobs:
             echo "project-dir=${project_dir}"
             echo "local-plugin-dir=${local_plugin_dir}"
             echo "sitectl-source-dir=${sitectl_source_dir}"
-            echo "go-cache-dependency-path=${go_cache_dependency_path}"
+            echo "go-cache-dependency-path<<EOF"
+            echo "${go_cache_dependency_path}"
+            echo "EOF"
             echo "local-bin-dir=${RUNNER_TEMP}/sitectl-local-bin"
             echo "diagnostics-artifact-name=sitectl-create-${PLUGIN}-${CREATE_DEFINITION}-${diagnostics_suffix}-docker-diagnostics"
             echo "diagnostics-dir=${RUNNER_TEMP}/sitectl-create-diagnostics-${diagnostics_suffix}"
@@ -413,6 +459,11 @@ jobs:
           IMAGES: ${{ inputs.images }}
           RUN_VERIFY: ${{ inputs.run-verify }}
           VERIFY_ARGS: ${{ inputs.verify-args }}
+          LOCAL_PLUGIN_REPOSITORY: ${{ inputs.local-plugin-repository }}
+          LOCAL_PLUGIN_REF: ${{ inputs.local-plugin-ref }}
+          LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
+          SITECTL_REPOSITORY: ${{ inputs.sitectl-repository }}
+          SITECTL_REF: ${{ inputs.sitectl-ref }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
           PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
           DIAGNOSTICS_DIR: ${{ steps.smoke.outputs.diagnostics-dir }}
@@ -428,6 +479,11 @@ jobs:
             echo "images=${IMAGES}"
             echo "run-verify=${RUN_VERIFY}"
             echo "verify-args=${VERIFY_ARGS}"
+            echo "local-plugin-repository=${LOCAL_PLUGIN_REPOSITORY}"
+            echo "local-plugin-ref=${LOCAL_PLUGIN_REF}"
+            echo "local-plugin-path=${LOCAL_PLUGIN_PATH}"
+            echo "sitectl-repository=${SITECTL_REPOSITORY}"
+            echo "sitectl-ref=${SITECTL_REF}"
             echo "checkout-source=${CHECKOUT_SOURCE}"
             echo "project-dir=${PROJECT_DIR}"
             echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
