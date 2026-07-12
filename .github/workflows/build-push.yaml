@@ -52,6 +52,7 @@ jobs:
           fi
 
       - name: GHCR Login
+        if: startsWith(inputs.docker-registry, 'ghcr.io')
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
@@ -77,7 +78,7 @@ jobs:
           password: ${{ steps.auth.outputs.access_token }}
 
       - name: Docker Hub Login
-        if: ${{ !contains(inputs.docker-registry, 'pkg.dev') }}
+        if: ${{ !contains(inputs.docker-registry, 'pkg.dev') && !startsWith(inputs.docker-registry, 'ghcr.io') }}
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           username: ${{ secrets.DOCKERHUB_USER }}
@@ -88,6 +89,7 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           repository: libops/.github
+          ref: 2b484149fca1653d2bd48311929efca21f32214d
           path: gha
           sparse-checkout: |
             ci/github/extract-docker-vars.sh
@@ -121,6 +123,7 @@ jobs:
       - build
     steps:
       - name: GHCR Login
+        if: startsWith(inputs.docker-registry, 'ghcr.io')
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
@@ -146,7 +149,7 @@ jobs:
           password: ${{ steps.auth.outputs.access_token }}
 
       - name: Docker Hub Login
-        if: ${{ !contains(inputs.docker-registry, 'pkg.dev') }}
+        if: ${{ !contains(inputs.docker-registry, 'pkg.dev') && !startsWith(inputs.docker-registry, 'ghcr.io') }}
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           username: ${{ secrets.DOCKERHUB_USER }}
@@ -155,6 +158,7 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           repository: libops/.github
+          ref: 2b484149fca1653d2bd48311929efca21f32214d
           path: gha
           sparse-checkout: |
             ci/github/extract-docker-vars.sh
