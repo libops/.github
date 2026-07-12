@@ -18,8 +18,9 @@ if [[ "${DOCKER_IMAGE}" == */ ]]; then
   DOCKER_IMAGE="${DOCKER_IMAGE}${REPO_NAME}"
 fi
 
-# Use GHCR for cache storage, based on the repository name
-CACHE_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+# Keep BuildKit cache credentials and storage with the selected image registry.
+# For the default GHCR prefix this resolves to the historical cache location.
+CACHE_IMAGE="$DOCKER_IMAGE"
 
 CACHE_TO=""
 if [ "${TAG}" = "main" ]; then
@@ -35,4 +36,3 @@ CACHE_FROM="type=registry,ref=$CACHE_IMAGE:cache-$PLATFORM"
   echo "cache-to=$CACHE_TO"
   echo "cache-from=$CACHE_FROM"
 } >> "$GITHUB_OUTPUT"
-
