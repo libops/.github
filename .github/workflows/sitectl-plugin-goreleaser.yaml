@@ -14,6 +14,10 @@ on:
       package-name:
         required: true
         type: string
+      publish-package-repo:
+        required: false
+        type: boolean
+        default: true
       sitectl-ref:
         required: false
         type: string
@@ -57,6 +61,7 @@ jobs:
           HOMEBREW_REPO_TOKEN: ${{ secrets.HOMEBREW_REPO }}
 
       - name: Authenticate to Google Cloud
+        if: ${{ inputs.publish-package-repo }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL }}
@@ -64,6 +69,7 @@ jobs:
           create_credentials_file: true
 
       - name: Checkout Package Publisher
+        if: ${{ inputs.publish-package-repo }}
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           repository: libops/terraform-linux-packages
@@ -72,6 +78,7 @@ jobs:
           path: .libops-packages
 
       - name: Publish Linux package repository
+        if: ${{ inputs.publish-package-repo }}
         shell: bash
         working-directory: .libops-packages
         env:
