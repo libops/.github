@@ -48,12 +48,13 @@ jobs:
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
-          # This binary receives the Homebrew publication token. Review and
+          # This binary receives two separately scoped tokens. Review and
           # advance the exact release deliberately instead of executing latest.
           version: v2.17.0
           args: ${{ inputs.goreleaser-args }}
         env:
-          GITHUB_TOKEN: ${{ secrets.HOMEBREW_REPO }}
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_REPO_TOKEN: ${{ secrets.HOMEBREW_REPO }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
