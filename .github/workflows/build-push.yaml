@@ -39,6 +39,7 @@ on:
         required: false
         type: string
         default: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
+        description: "Deprecated compatibility input; must remain the fixed LibOps hosted-runner pair"
       docker-registry:
         required: false
         type: string
@@ -49,11 +50,26 @@ on:
         type: string
         default: ""
         description: "Optional GAR prefix that receives the same build in addition to docker-registry (caller needs id-token: write)"
+      additional-image-names:
+        required: false
+        type: string
+        default: "[]"
+        description: "JSON array of alias image names published from the same build under every configured registry prefix"
       scan:
         required: false
         type: boolean
         default: false
         description: "Scan each exact native platform image with Trivy before publishing it"
+      sign:
+        required: false
+        type: boolean
+        default: false
+        description: "Keylessly sign and verify each final multi-platform manifest (caller needs id-token: write)"
+      certificate-identity:
+        required: false
+        type: string
+        default: ""
+        description: "Exact Fulcio URI for the SHA-pinned reusable build-push workflow; required when sign is true"
       workload-identity-provider:
         required: false
         type: string
@@ -64,14 +80,29 @@ on:
         type: string
         default: ""
         description: "Google publisher service account; falls back to GSA"
+    secrets:
+      GCLOUD_OIDC_POOL:
+        required: false
+        description: "Google workload identity provider used when its corresponding input is empty"
+      GSA:
+        required: false
+        description: "Google publisher service account used when its corresponding input is empty"
+      DOCKERHUB_USER:
+        required: false
+        description: "Docker Hub username, required only when Docker Hub is the primary registry"
+      DOCKERHUB_PASSWORD:
+        required: false
+        description: "Docker Hub token, required only when Docker Hub is the primary registry"
 jobs:
   build:
     strategy:
       matrix:
-        runner: ${{ fromJSON(inputs.runners) }}
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
     name: build-${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     outputs:
       image-tag: ${{ steps.record-tag.outputs.tag }}
     steps:
@@ -79,20 +110,32 @@ jobs:
         id: registry
         env:
           ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           BUILD_CONTEXT: ${{ inputs.context }}
           CALLER_REF: ${{ inputs.ref }}
+          CERTIFICATE_IDENTITY: ${{ inputs.certificate-identity }}
           DOCKER_FILE: ${{ inputs.file }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
           IMAGE_NAME: ${{ inputs.image }}
           REGISTRY_PREFIX: ${{ inputs.docker-registry }}
+          RUNNERS: ${{ inputs.runners }}
+          SIGN: ${{ inputs.sign }}
           TAG_OVERRIDE: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          image_regex='^([A-Za-z0-9\.\/\-]+)?$'
-          if [[ "$IMAGE_NAME" =~ $image_regex ]]; then
+          image_regex='^[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$'
+          canonical_image_name="$IMAGE_NAME"
+          if [[ -z "$canonical_image_name" ]]; then
+            canonical_image_name="${GITHUB_REPOSITORY#*/}"
+          fi
+          if [[ "$canonical_image_name" =~ $image_regex ]]; then
             echo "Valid docker image name"
           else
             echo "Invalid docker image name"
+            exit 1
+          fi
+          if ! jq -e '. == ["ubuntu-24.04", "ubuntu-24.04-arm"]' <<< "$RUNNERS" >/dev/null; then
+            echo "The runners compatibility input must remain the fixed LibOps hosted-runner pair" >&2
             exit 1
           fi
           validate_repo_path() {
@@ -127,6 +170,10 @@ jobs:
               exit 1
             fi
           fi
+          if [[ "$SIGN" == true && ! "$CERTIFICATE_IDENTITY" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/build-push\.ya?ml@[0-9a-fA-F]{40}$ ]]; then
+            echo "Signing requires the exact Fulcio identity of a SHA-pinned build-push reusable workflow" >&2
+            exit 1
+          fi
           if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
             if [[ ! "$ADDITIONAL_GAR_REGISTRY" =~ ^[A-Za-z0-9-]+\.pkg\.dev/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
               echo "Additional registry must be a GAR repository prefix"
@@ -138,6 +185,24 @@ jobs:
             fi
           fi
 
+          if ! jq -e 'type == "array" and length <= 8 and all(.[]; type == "string")' <<< "$ADDITIONAL_IMAGE_NAMES" >/dev/null; then
+            echo "Additional image names must be a JSON array containing at most 8 strings" >&2
+            exit 1
+          fi
+          declare -A seen_image_names=(["$canonical_image_name"]=1)
+          mapfile -t additional_image_names < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          for additional_image_name in "${additional_image_names[@]}"; do
+            if [[ ! "$additional_image_name" =~ $image_regex ]]; then
+              echo "Invalid additional image name: $additional_image_name" >&2
+              exit 1
+            fi
+            if [[ -n "${seen_image_names[$additional_image_name]:-}" ]]; then
+              echo "Additional image names must be unique and differ from the canonical image name" >&2
+              exit 1
+            fi
+            seen_image_names["$additional_image_name"]=1
+          done
+
           primary_host="${REGISTRY_PREFIX%%/*}"
           case "$primary_host" in
             ghcr.io) primary_kind=ghcr ;;
@@ -148,6 +213,11 @@ jobs:
             echo "primary-host=$primary_host"
             echo "primary-kind=$primary_kind"
             echo "additional-host=${ADDITIONAL_GAR_REGISTRY%%/*}"
+            if (( ${#additional_image_names[@]} > 0 )); then
+              echo "has-aliases=true"
+            else
+              echo "has-aliases=false"
+            fi
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
@@ -211,6 +281,7 @@ jobs:
         id: metadata
         env:
           ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           DERIVED_TAG: ${{ steps.vars.outputs.tag }}
           IMAGE_NAME: ${{ inputs.image }}
           PLATFORM: ${{ steps.vars.outputs.platform }}
@@ -221,22 +292,24 @@ jobs:
           tag="${TAG_OVERRIDE:-$DERIVED_TAG}"
           image_name="$IMAGE_NAME"
           artifact_key="$(
-            printf '%s\n' "$GITHUB_REPOSITORY" "$PRIMARY_IMAGE" "$tag" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" |
+            printf '%s\n' "$GITHUB_REPOSITORY" "$PRIMARY_IMAGE" "$tag" "$ADDITIONAL_IMAGE_NAMES" "$GITHUB_RUN_ID" |
               sha256sum |
               cut -c1-24
           )"
+          temporary_tag="ci-${artifact_key}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
           if [[ -z "$image_name" ]]; then
             image_name="${GITHUB_REPOSITORY#*/}"
           fi
           {
             echo "artifact-name=build-digests-$artifact_key"
             echo "tag=$tag"
+            echo "temporary-tag=$temporary_tag"
             echo "primary-image=$PRIMARY_IMAGE"
-            echo "primary-platform-ref=${PRIMARY_IMAGE}:${tag}-${PLATFORM}"
-            echo "local-image=libops-ci/build:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
+            echo "primary-platform-ref=${PRIMARY_IMAGE}:${temporary_tag}"
+            echo "local-image=libops-ci/build:${artifact_key}-${PLATFORM}"
             if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
               echo "additional-image=${ADDITIONAL_GAR_REGISTRY}/${image_name}"
-              echo "additional-platform-ref=${ADDITIONAL_GAR_REGISTRY}/${image_name}:${tag}-${PLATFORM}"
+              echo "additional-platform-ref=${ADDITIONAL_GAR_REGISTRY}/${image_name}:${temporary_tag}"
             fi
           } >> "$GITHUB_OUTPUT"
 
@@ -278,12 +351,14 @@ jobs:
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
 
       - name: build+push
-        if: ${{ !inputs.scan && inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' }}
+        id: push-direct
+        if: ${{ !inputs.scan && inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' && steps.registry.outputs.has-aliases != 'true' }}
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: ${{ steps.paths.outputs.context }}
           file: ${{ steps.paths.outputs.file }}
           push: true
+          provenance: false
           cache-from: ${{ steps.vars.outputs.cache-from }}
           cache-to: ${{ steps.vars.outputs.cache-to }}
           build-args: |
@@ -293,7 +368,7 @@ jobs:
             ${{ steps.metadata.outputs.primary-platform-ref }}
 
       - name: Build native image for verified publication
-        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' }}
+        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' || steps.registry.outputs.has-aliases == 'true' }}
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: ${{ steps.paths.outputs.context }}
@@ -303,7 +378,6 @@ jobs:
           push: false
           provenance: false
           cache-from: ${{ steps.vars.outputs.cache-from }}
-          cache-to: ${{ steps.vars.outputs.cache-to }}
           build-args: |
             ${{ inputs.build-args }}
             GIT_BRANCH=${{ steps.metadata.outputs.tag }}
@@ -319,6 +393,21 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
           vuln-type: os,library
+
+      - name: Record directly pushed platform digest
+        if: ${{ !inputs.scan && inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' && steps.registry.outputs.has-aliases != 'true' }}
+        env:
+          DIGEST: ${{ steps.push-direct.outputs.digest }}
+          PLATFORM: ${{ steps.vars.outputs.platform }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "BuildKit did not report a valid platform digest" >&2
+            exit 1
+          fi
+          digest_dir="$RUNNER_TEMP/build-digests"
+          mkdir -p "$digest_dir"
+          printf '%s\n' "$DIGEST" > "$digest_dir/${PLATFORM}.primary"
 
       - name: Authenticate additional GAR
         id: auth-additional
@@ -340,14 +429,18 @@ jobs:
 
       - name: Push verified native image
         id: push-verified
-        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' }}
+        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' || steps.registry.outputs.has-aliases == 'true' }}
         env:
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           ADDITIONAL_PLATFORM_REF: ${{ steps.metadata.outputs.additional-platform-ref }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
           GH_TOKEN: ${{ inputs.expected-main-sha != '' && github.token || '' }}
           LOCAL_IMAGE: ${{ steps.metadata.outputs.local-image }}
           PLATFORM: ${{ steps.vars.outputs.platform }}
           PRIMARY_PLATFORM_REF: ${{ steps.metadata.outputs.primary-platform-ref }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
+          TEMPORARY_TAG: ${{ steps.metadata.outputs.temporary-tag }}
         run: |
           set -euo pipefail
           digest_dir="$RUNNER_TEMP/build-digests"
@@ -385,14 +478,26 @@ jobs:
           if [[ -n "$ADDITIONAL_PLATFORM_REF" ]]; then
             push_image "$ADDITIONAL_PLATFORM_REF" "$digest_dir/${PLATFORM}.additional"
           fi
+          mapfile -t additional_image_names < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          for alias_index in "${!additional_image_names[@]}"; do
+            alias_name="${additional_image_names[$alias_index]}"
+            push_image \
+              "${PRIMARY_REGISTRY}/${alias_name}:${TEMPORARY_TAG}" \
+              "$digest_dir/${PLATFORM}.primary-alias-${alias_index}"
+            if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
+              push_image \
+                "${ADDITIONAL_GAR_REGISTRY}/${alias_name}:${TEMPORARY_TAG}" \
+                "$digest_dir/${PLATFORM}.additional-alias-${alias_index}"
+            fi
+          done
 
-      - name: Preserve verified platform digests
-        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' }}
+      - name: Preserve platform digests
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.metadata.outputs.artifact-name }}-${{ steps.vars.outputs.platform }}
           path: ${{ runner.temp }}/build-digests
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
       - name: record image tag
@@ -401,7 +506,7 @@ jobs:
           echo "tag=${{ steps.metadata.outputs.primary-platform-ref }}" >> "$GITHUB_OUTPUT"
   merge:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     needs:
       - build
     steps:
@@ -495,6 +600,7 @@ jobs:
         id: metadata
         env:
           ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           DERIVED_TAG: ${{ steps.vars.outputs.tag }}
           IMAGE_NAME: ${{ inputs.image }}
           PRIMARY_IMAGE: ${{ steps.vars.outputs.image }}
@@ -504,7 +610,7 @@ jobs:
           tag="${TAG_OVERRIDE:-$DERIVED_TAG}"
           image_name="$IMAGE_NAME"
           artifact_key="$(
-            printf '%s\n' "$GITHUB_REPOSITORY" "$PRIMARY_IMAGE" "$tag" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" |
+            printf '%s\n' "$GITHUB_REPOSITORY" "$PRIMARY_IMAGE" "$tag" "$ADDITIONAL_IMAGE_NAMES" "$GITHUB_RUN_ID" |
               sha256sum |
               cut -c1-24
           )"
@@ -522,8 +628,11 @@ jobs:
 
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
 
-      - name: Restore verified platform digests
-        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' }}
+      - name: Install Cosign
+        if: inputs.sign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Restore platform digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: ${{ steps.metadata.outputs.artifact-name }}-*
@@ -533,50 +642,16 @@ jobs:
       - name: merge platform images
         env:
           ADDITIONAL_IMAGE: ${{ steps.metadata.outputs.additional-image }}
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           DIGEST_DIR: ${{ runner.temp }}/build-digests
-          DOCKER_IMAGE: ${{ steps.vars.outputs.image }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
           GH_TOKEN: ${{ inputs.expected-main-sha != '' && github.token || '' }}
-          GUARDED: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' }}
           PRIMARY_IMAGE: ${{ steps.metadata.outputs.primary-image }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
           PUBLICATION_TAG: ${{ steps.metadata.outputs.tag }}
-          RUNNERS: ${{ inputs.runners }}
         run: |
           set -euo pipefail
-          primary_tags=()
-          additional_tags=()
-          mapfile -t runners < <(jq -r '.[]' <<< "$RUNNERS")
-          for runner in "${runners[@]}"; do
-            runner_arch="X64"
-            if [[ "$runner" == *"arm"* ]]; then
-              runner_arch="ARM64"
-            fi
-            RUNNER_ARCH="${runner_arch}" GITHUB_OUTPUT="/tmp/vars_${runner}.txt" ./gha/ci/github/extract-docker-vars.sh
-            image=$(grep "^image=" "/tmp/vars_${runner}.txt" | cut -d'=' -f2)
-            platform=$(grep "^platform=" "/tmp/vars_${runner}.txt" | cut -d'=' -f2)
-
-            if [[ "$GUARDED" == true ]]; then
-              primary_digest="$(< "$DIGEST_DIR/${platform}.primary")"
-              if [[ ! "$primary_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                echo "Invalid primary digest for $platform" >&2
-                exit 1
-              fi
-              primary_tags+=("${image}@${primary_digest}")
-              if [[ -n "$ADDITIONAL_IMAGE" ]]; then
-                additional_digest="$(< "$DIGEST_DIR/${platform}.additional")"
-                if [[ ! "$additional_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-                  echo "Invalid additional digest for $platform" >&2
-                  exit 1
-                fi
-                additional_tags+=("${ADDITIONAL_IMAGE}@${additional_digest}")
-              fi
-            else
-              primary_tags+=("${image}:${PUBLICATION_TAG}-${platform}")
-              if [[ -n "$ADDITIONAL_IMAGE" ]]; then
-                additional_tags+=("${ADDITIONAL_IMAGE}:${PUBLICATION_TAG}-${platform}")
-              fi
-            fi
-          done
 
           require_current_main() {
             if [[ -z "$EXPECTED_MAIN_SHA" ]]; then
@@ -588,14 +663,200 @@ jobs:
               exit 1
             fi
           }
-
-          require_current_main
-          docker buildx imagetools create \
-            -t "${PRIMARY_IMAGE}:${PUBLICATION_TAG}" \
-            "${primary_tags[@]}"
-          if [[ -n "$ADDITIONAL_IMAGE" ]]; then
+          create_manifest() {
+            local target_image="$1"
+            local digest_suffix="$2"
+            local digest
+            local platform
+            local -a sources=()
+            for platform in amd64 arm64; do
+              digest="$(< "$DIGEST_DIR/${platform}.${digest_suffix}")"
+              if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "Invalid $digest_suffix digest for $platform" >&2
+                exit 1
+              fi
+              sources+=("${target_image}@${digest}")
+            done
             require_current_main
             docker buildx imagetools create \
-              -t "${ADDITIONAL_IMAGE}:${PUBLICATION_TAG}" \
-              "${additional_tags[@]}"
+              -t "${target_image}:${PUBLICATION_TAG}" \
+              "${sources[@]}"
+          }
+
+          create_manifest "$PRIMARY_IMAGE" primary
+          if [[ -n "$ADDITIONAL_IMAGE" ]]; then
+            create_manifest "$ADDITIONAL_IMAGE" additional
           fi
+          mapfile -t additional_image_names < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          for alias_index in "${!additional_image_names[@]}"; do
+            alias_name="${additional_image_names[$alias_index]}"
+            create_manifest \
+              "${PRIMARY_REGISTRY}/${alias_name}" \
+              "primary-alias-${alias_index}"
+            if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
+              create_manifest \
+                "${ADDITIONAL_GAR_REGISTRY}/${alias_name}" \
+                "additional-alias-${alias_index}"
+            fi
+          done
+
+      - name: Verify final manifest parity
+        env:
+          ADDITIONAL_IMAGE: ${{ steps.metadata.outputs.additional-image }}
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
+          PRIMARY_IMAGE: ${{ steps.metadata.outputs.primary-image }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
+          PUBLICATION_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          manifest_digest() {
+            local tagged_ref="${1}:${PUBLICATION_TAG}"
+            local digest
+            digest="$(
+              docker buildx imagetools inspect "$tagged_ref" --format '{{json .Manifest}}' |
+                jq -er '.digest'
+            )"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Registry did not report a valid final manifest digest for $tagged_ref" >&2
+              exit 1
+            fi
+            printf '%s\n' "$digest"
+          }
+          require_manifest_parity() {
+            local image="$1"
+            local digest
+            digest="$(manifest_digest "$image")"
+            if [[ "$digest" != "$expected_digest" ]]; then
+              echo "$image resolved to $digest, expected $expected_digest" >&2
+              exit 1
+            fi
+          }
+
+          expected_digest="$(manifest_digest "$PRIMARY_IMAGE")"
+          if [[ -n "$ADDITIONAL_IMAGE" ]]; then
+            require_manifest_parity "$ADDITIONAL_IMAGE"
+          fi
+          mapfile -t additional_image_names < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          for alias_name in "${additional_image_names[@]}"; do
+            require_manifest_parity "${PRIMARY_REGISTRY}/${alias_name}"
+            if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
+              require_manifest_parity "${ADDITIONAL_GAR_REGISTRY}/${alias_name}"
+            fi
+          done
+
+      - name: Sign and verify final manifests
+        if: inputs.sign
+        env:
+          ADDITIONAL_IMAGE: ${{ steps.metadata.outputs.additional-image }}
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CERTIFICATE_IDENTITY: ${{ inputs.certificate-identity }}
+          EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
+          GH_TOKEN: ${{ inputs.expected-main-sha != '' && github.token || '' }}
+          PRIMARY_IMAGE: ${{ steps.metadata.outputs.primary-image }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
+          PUBLICATION_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          validate_oidc_identity() {
+            local encoded_payload
+            local expected_job_workflow_ref
+            local identity_token
+            local oidc_claims
+            local oidc_response
+            local padding
+            oidc_response="$(
+              curl --fail --silent --show-error --retry 3 --retry-all-errors \
+                -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore"
+            )"
+            identity_token="$(jq -er '.value' <<< "$oidc_response")"
+            encoded_payload="${identity_token#*.}"
+            encoded_payload="${encoded_payload%%.*}"
+            encoded_payload="${encoded_payload//-/+}"
+            encoded_payload="${encoded_payload//_/\/}"
+            padding=$(( ${#encoded_payload} % 4 ))
+            case "$padding" in
+              0) ;;
+              2) encoded_payload+="==" ;;
+              3) encoded_payload+="=" ;;
+              *) echo "GitHub returned an invalid OIDC token" >&2; exit 1 ;;
+            esac
+            oidc_claims="$(printf '%s' "$encoded_payload" | base64 --decode)"
+            expected_job_workflow_ref="${CERTIFICATE_IDENTITY#https://github.com/}"
+            jq -e \
+              --arg audience "sigstore" \
+              --arg caller_ref "$GITHUB_REF" \
+              --arg caller_repository "$GITHUB_REPOSITORY" \
+              --arg caller_sha "$GITHUB_SHA" \
+              --arg caller_workflow_ref "$CALLER_WORKFLOW_REF" \
+              --arg issuer "https://token.actions.githubusercontent.com" \
+              --arg job_workflow_ref "$expected_job_workflow_ref" \
+              '.aud == $audience and
+               .iss == $issuer and
+               .job_workflow_ref == $job_workflow_ref and
+               .workflow_ref == $caller_workflow_ref and
+               .repository == $caller_repository and
+               .ref == $caller_ref and
+               .sha == $caller_sha' \
+              <<< "$oidc_claims" >/dev/null || {
+                echo "GitHub OIDC identity does not match the pinned builder and exact caller" >&2
+                exit 1
+              }
+            unset identity_token oidc_claims oidc_response
+          }
+
+          require_current_main() {
+            if [[ -z "$EXPECTED_MAIN_SHA" ]]; then
+              return
+            fi
+            current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+            if [[ "${current_main,,}" != "${EXPECTED_MAIN_SHA,,}" ]]; then
+              echo "Main advanced to $current_main; refusing to sign $EXPECTED_MAIN_SHA" >&2
+              exit 1
+            fi
+          }
+          sign_and_verify() {
+            local image="$1"
+            local tagged_ref="${image}:${PUBLICATION_TAG}"
+            local digest
+            local digest_ref
+            digest="$(
+              docker buildx imagetools inspect "$tagged_ref" --format '{{json .Manifest}}' |
+                jq -er '.digest'
+            )"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Registry did not report a valid final manifest digest for $tagged_ref" >&2
+              exit 1
+            fi
+            digest_ref="${image}@${digest}"
+
+            require_current_main
+            cosign sign --yes \
+              -a "caller-workflow-ref=${CALLER_WORKFLOW_REF}" \
+              "$digest_ref"
+            cosign verify \
+              --certificate-identity "$CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+              --certificate-github-workflow-ref "$GITHUB_REF" \
+              --certificate-github-workflow-sha "$GITHUB_SHA" \
+              -a "caller-workflow-ref=${CALLER_WORKFLOW_REF}" \
+              "$digest_ref" >/dev/null
+          }
+
+          validate_oidc_identity
+          sign_and_verify "$PRIMARY_IMAGE"
+          if [[ -n "$ADDITIONAL_IMAGE" ]]; then
+            sign_and_verify "$ADDITIONAL_IMAGE"
+          fi
+          mapfile -t additional_image_names < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          for alias_name in "${additional_image_names[@]}"; do
+            sign_and_verify "${PRIMARY_REGISTRY}/${alias_name}"
+            if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
+              sign_and_verify "${ADDITIONAL_GAR_REGISTRY}/${alias_name}"
+            fi
+          done

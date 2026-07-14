@@ -5,12 +5,16 @@ on:
     paths:
       - ".github/actions/**"
       - ".github/workflows/**"
+      - "ci/github/**"
+      - "README.md"
   push:
     branches:
       - main
     paths:
       - ".github/actions/**"
       - ".github/workflows/**"
+      - "ci/github/**"
+      - "README.md"
 
 permissions:
   contents: read
@@ -33,3 +37,6 @@ jobs:
 
       - name: Validate workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Validate image publisher contracts
+        run: go test ./ci/github/build_push_contract_test.go
