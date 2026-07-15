@@ -107,6 +107,11 @@ on:
         required: false
         type: boolean
         default: true
+      expected-template-lock-revision:
+        description: Require a generated template lock with this component-default revision. Valid only with checkout-source=template.
+        required: false
+        type: string
+        default: ""
       runner:
         description: GitHub Actions runner label.
         required: false
@@ -186,6 +191,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           PACKAGE_VERSIONS: ${{ inputs.package-versions }}
           ALLOW_UNVERSIONED_PACKAGES: ${{ inputs.allow-unversioned-packages }}
+          EXPECTED_TEMPLATE_LOCK_REVISION: ${{ inputs.expected-template-lock-revision }}
         run: |
           set -euo pipefail
 
@@ -231,6 +237,16 @@ jobs:
               exit 1
               ;;
           esac
+          if [ -n "${EXPECTED_TEMPLATE_LOCK_REVISION}" ]; then
+            if [ "${CHECKOUT_SOURCE}" != "template" ]; then
+              echo "::error::expected-template-lock-revision requires checkout-source=template"
+              exit 1
+            fi
+            if [[ ! "${EXPECTED_TEMPLATE_LOCK_REVISION}" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$ ]]; then
+              echo "::error::Invalid expected-template-lock-revision input"
+              exit 1
+            fi
+          fi
 
           project_path="${PROJECT_PATH}"
           if [ -z "${project_path// }" ]; then
@@ -445,6 +461,40 @@ jobs:
             cd "${PROJECT_DIR}"
             sitectl healthcheck --persist --timeout 10m --interval 15s
           )
+
+      - name: Verify retained template provenance
+        if: ${{ inputs.expected-template-lock-revision != '' }}
+        shell: bash
+        env:
+          EXPECTED_TEMPLATE_LOCK_REVISION: ${{ inputs.expected-template-lock-revision }}
+          PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
+          TEMPLATE_REPO: ${{ inputs.template-repo }}
+        run: |
+          set -euo pipefail
+
+          lock="${PROJECT_DIR}/.libops/template.lock.yaml"
+          if [ -L "${lock}" ] || [ ! -f "${lock}" ]; then
+            echo "::error::sitectl create did not retain a regular template provenance lock"
+            exit 1
+          fi
+          if [ "$(stat -c '%a' "${lock}")" != "644" ]; then
+            echo "::error::template provenance lock must use mode 0644"
+            exit 1
+          fi
+          grep -Fxq 'apiVersion: sitectl.libops.io/v1alpha1' "${lock}"
+          grep -Fxq 'kind: TemplateLock' "${lock}"
+          grep -Fxq 'schema: 1' "${lock}"
+          grep -Eq '^  commit: [0-9a-f]{40}([0-9a-f]{24})?$' "${lock}"
+          grep -Fxq '    path: .libops/template-contract.yaml' "${lock}"
+          grep -Eq '^    digest: sha256:[0-9a-f]{64}$' "${lock}"
+          awk -v expected="${EXPECTED_TEMPLATE_LOCK_REVISION}" '
+            $0 == "componentDefaults:" { in_defaults = 1; next }
+            in_defaults && $0 == "  revision: " expected { found = 1 }
+            END { exit(found ? 0 : 1) }
+          ' "${lock}"
+          if [ -n "${TEMPLATE_REPO}" ]; then
+            grep -Fxq "  repository: ${TEMPLATE_REPO}" "${lock}"
+          fi
 
       - name: Run sitectl verify
         if: ${{ inputs.run-verify }}

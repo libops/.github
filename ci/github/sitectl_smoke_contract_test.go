@@ -25,3 +25,21 @@ func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 		t.Error("install-sitectl action must remain pinned to a full commit SHA")
 	}
 }
+
+func TestSitectlSmokeWorkflowCanGateRetainedTemplateProvenance(t *testing.T) {
+	workflow := githubReadFile(t, ".github/workflows/sitectl-create-smoke-test.yaml")
+	for _, required := range []string{
+		"      expected-template-lock-revision:\n",
+		"expected-template-lock-revision requires checkout-source=template",
+		"      - name: Verify retained template provenance",
+		"if: ${{ inputs.expected-template-lock-revision != '' }}",
+		"lock=\"${PROJECT_DIR}/.libops/template.lock.yaml\"",
+		"grep -Eq '^  commit: [0-9a-f]{40}([0-9a-f]{24})?$'",
+		"grep -Eq '^    digest: sha256:[0-9a-f]{64}$'",
+		"$0 == \"componentDefaults:\"",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("sitectl smoke workflow is missing provenance contract %q", required)
+		}
+	}
+}
