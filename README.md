@@ -52,6 +52,8 @@ The publication modes are:
 
 Digest artifact names are stable for a workflow run and architecture. A failed-job rerun can therefore combine an untouched digest from attempt 1 with a repaired digest from attempt 2. Rerun jobs overwrite only their own artifact. Attempt numbers appear only in temporary native registry tags; the merge consumes immutable digests.
 
+An always-run cleanup job retains all run-scoped staging tags when a build or merge fails so a failed-job rerun can reuse the successful native digest. After a verified merge, cleanup is best effort and cannot change the publication result. For GAR, the workflow calls only the Artifact Registry tag resource's delete method. The publisher identity therefore needs a repository-scoped custom role containing only `artifactregistry.tags.delete`; `roles/artifactregistry.writer` does not include that permission. Artifact Registry does not expose supported resource-name IAM condition attributes for restricting this permission to a tag prefix, so the custom role can delete any tag in that repository. GHCR and registries without a conditional tag-only delete retain the exact `ci-*` tags and emit a workflow warning rather than risking a published native version.
+
 Builds always run on the fixed `ubuntu-24.04` and `ubuntu-24.04-arm` GitHub-hosted runners, and the merge always consumes the fixed `amd64` and `arm64` platforms. The deprecated `runners` input remains for caller compatibility, but only its default pair is accepted; it cannot select a self-hosted or arbitrary runner with publisher credentials.
 
 ### Caller secrets

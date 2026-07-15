@@ -860,3 +860,214 @@ jobs:
               sign_and_verify "${ADDITIONAL_GAR_REGISTRY}/${alias_name}"
             fi
           done
+
+  cleanup:
+    name: cleanup-staging-tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs:
+      - build
+      - merge
+    if: ${{ always() }}
+    # Cleanup is deliberately best effort. A registry or IAM cleanup outage must
+    # not turn an already verified publication into a failed release rerun.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        if: needs.merge.result == 'success'
+        with:
+          repository: libops/.github
+          ref: f872de10579c17155eb0a0c581d9ac7088b2f836
+          path: gha
+          sparse-checkout: |
+            ci/github/extract-docker-vars.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Resolve derived image values
+        if: needs.merge.result == 'success'
+        id: vars
+        run: ./gha/ci/github/extract-docker-vars.sh
+        env:
+          DOCKER_IMAGE: ${{ inputs.docker-registry }}/${{ inputs.image }}
+
+      - name: Resolve successful publication cleanup scope
+        if: needs.merge.result == 'success'
+        id: cleanup
+        env:
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
+          DERIVED_TAG: ${{ steps.vars.outputs.tag }}
+          PRIMARY_IMAGE: ${{ steps.vars.outputs.image }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
+          TAG_OVERRIDE: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          image_regex='^[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$'
+          registry_regex='^[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]+)?$'
+          tag="${TAG_OVERRIDE:-$DERIVED_TAG}"
+          primary_path="${PRIMARY_IMAGE#*/}"
+
+          if [[ ! "$PRIMARY_REGISTRY" =~ $registry_regex ||
+                "$primary_path" == "$PRIMARY_IMAGE" ||
+                ! "$primary_path" =~ $image_regex ||
+                ! "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Cleanup scope did not pass registry, image, and tag validation" >&2
+            exit 1
+          fi
+          if ! jq -e 'type == "array" and length <= 8 and all(.[]; type == "string")' \
+            <<< "$ADDITIONAL_IMAGE_NAMES" >/dev/null; then
+            echo "Cleanup aliases must be a JSON array containing at most 8 strings" >&2
+            exit 1
+          fi
+          mapfile -t aliases < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          for alias_name in "${aliases[@]}"; do
+            if [[ ! "$alias_name" =~ $image_regex ]]; then
+              echo "Invalid cleanup alias: $alias_name" >&2
+              exit 1
+            fi
+          done
+
+          primary_host="${PRIMARY_REGISTRY%%/*}"
+          case "$primary_host" in
+            *-docker.pkg.dev) primary_kind=gar ;;
+            ghcr.io) primary_kind=ghcr ;;
+            *) primary_kind=unsupported ;;
+          esac
+          if [[ -n "$ADDITIONAL_GAR_REGISTRY" &&
+                ! "$ADDITIONAL_GAR_REGISTRY" =~ ^[A-Za-z0-9-]+-docker\\.pkg\\.dev/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+            echo "Cleanup additional registry must be a GAR Docker repository prefix" >&2
+            exit 1
+          fi
+
+          artifact_key="$(
+            printf '%s\\n' "$GITHUB_REPOSITORY" "$PRIMARY_IMAGE" "$tag" "$ADDITIONAL_IMAGE_NAMES" "$GITHUB_RUN_ID" |
+              sha256sum |
+              cut -c1-24
+          )"
+          {
+            echo "artifact-key=$artifact_key"
+            echo "primary-kind=$primary_kind"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate GAR for exact tag cleanup
+        id: auth-cleanup
+        if: ${{ needs.merge.result == 'success' && steps.cleanup.outcome == 'success' && (steps.cleanup.outputs.primary-kind == 'gar' || inputs.additional-gar-registry != '') }}
+        continue-on-error: true
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ inputs.workload-identity-provider || secrets.GCLOUD_OIDC_POOL }}
+          create_credentials_file: false
+          service_account: ${{ inputs.service-account || secrets.GSA }}
+          token_format: "access_token"
+
+      - name: Remove exact GAR staging tags after verified merge
+        if: ${{ needs.merge.result == 'success' && steps.cleanup.outcome == 'success' && (steps.cleanup.outputs.primary-kind == 'gar' || inputs.additional-gar-registry != '') }}
+        env:
+          ACCESS_TOKEN: ${{ steps.auth-cleanup.outputs.access_token }}
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
+          ARTIFACT_KEY: ${{ steps.cleanup.outputs.artifact-key }}
+          IMAGE_NAME: ${{ inputs.image }}
+          PRIMARY_IMAGE: ${{ steps.vars.outputs.image }}
+          PRIMARY_KIND: ${{ steps.cleanup.outputs.primary-kind }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
+        run: |
+          set -euo pipefail
+          warn() {
+            echo "::warning title=Staging tag cleanup::$*"
+          }
+          if [[ -z "$ACCESS_TOKEN" ]]; then
+            warn "GAR authentication failed; leaving staging tags intact"
+            exit 0
+          fi
+
+          mapfile -t aliases < <(jq -r '.[]' <<< "$ADDITIONAL_IMAGE_NAMES")
+          images=()
+          if [[ "$PRIMARY_KIND" == gar ]]; then
+            images+=("$PRIMARY_IMAGE")
+            for alias_name in "${aliases[@]}"; do
+              images+=("${PRIMARY_REGISTRY}/${alias_name}")
+            done
+          fi
+          if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
+            canonical_name="$IMAGE_NAME"
+            if [[ -z "$canonical_name" ]]; then
+              canonical_name="${GITHUB_REPOSITORY#*/}"
+            fi
+            images+=("${ADDITIONAL_GAR_REGISTRY}/${canonical_name}")
+            for alias_name in "${aliases[@]}"; do
+              images+=("${ADDITIONAL_GAR_REGISTRY}/${alias_name}")
+            done
+          fi
+
+          api_root="${ARTIFACT_REGISTRY_API_ROOT:-https://artifactregistry.googleapis.com/v1}"
+          for image in "${images[@]}"; do
+            host="${image%%/*}"
+            path="${image#*/}"
+            project="${path%%/*}"
+            path="${path#*/}"
+            repository="${path%%/*}"
+            package="${path#*/}"
+            location="${host%-docker.pkg.dev}"
+            if [[ "$host" != "${location}-docker.pkg.dev" ||
+                  -z "$location" || -z "$project" || -z "$repository" ||
+                  -z "$package" || "$package" == "$path" ]]; then
+              warn "Refusing malformed GAR cleanup image $image"
+              continue
+            fi
+            encoded_package="$(jq -rn --arg value "$package" '$value | @uri')"
+            permission_denied=false
+            for attempt in $(seq 1 "$GITHUB_RUN_ATTEMPT"); do
+              for platform in amd64 arm64; do
+                staging_tag="ci-${ARTIFACT_KEY}-${attempt}-${platform}"
+                url="${api_root}/projects/${project}/locations/${location}/repositories/${repository}/packages/${encoded_package}/tags/${staging_tag}"
+                response="$(mktemp)"
+                status="$(
+                  curl --silent --show-error --retry 3 --retry-all-errors \
+                    --output "$response" \
+                    --write-out '%{http_code}' \
+                    --request DELETE \
+                    --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                    "$url" || true
+                )"
+                case "$status" in
+                  200|404) ;;
+                  401|403)
+                    warn "GAR tag cleanup lacks artifactregistry.tags.delete for $image"
+                    permission_denied=true
+                    ;;
+                  *)
+                    message="$(jq -r '.error.message // "unknown registry error"' "$response" 2>/dev/null || true)"
+                    warn "GAR refused exact tag cleanup for ${image}:${staging_tag}: HTTP ${status} ${message}"
+                    ;;
+                esac
+                rm -f "$response"
+                if [[ "$permission_denied" == true ]]; then
+                  break 2
+                fi
+              done
+            done
+          done
+
+      - name: Report retained staging tags
+        if: ${{ always() }}
+        env:
+          ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
+          MERGE_RESULT: ${{ needs.merge.result }}
+          PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
+        run: |
+          set -euo pipefail
+          if [[ "$MERGE_RESULT" != success ]]; then
+            echo "::warning title=Staging tag cleanup::Publication did not merge successfully; retaining all exact ci-* tags for a failed-job rerun."
+            exit 0
+          fi
+          primary_host="${PRIMARY_REGISTRY%%/*}"
+          if [[ "$primary_host" == ghcr.io ]]; then
+            echo "::warning title=Staging tag cleanup::GHCR has no conditional tag-only delete; retaining exact ci-* tags to avoid deleting a published native version."
+          elif [[ "$primary_host" != *-docker.pkg.dev ]]; then
+            echo "::warning title=Staging tag cleanup::${PRIMARY_REGISTRY} has no safe cleanup implementation; exact ci-* tags remain."
+          fi
+          if [[ -z "$ADDITIONAL_GAR_REGISTRY" && "$primary_host" != *-docker.pkg.dev ]]; then
+            echo "No GAR staging tags required cleanup."
+          fi
