@@ -484,16 +484,16 @@ jobs:
           grep -Fxq 'apiVersion: sitectl.libops.io/v1alpha1' "${lock}"
           grep -Fxq 'kind: TemplateLock' "${lock}"
           grep -Fxq 'schema: 1' "${lock}"
-          grep -Eq '^  commit: [0-9a-f]{40}([0-9a-f]{24})?$' "${lock}"
-          grep -Fxq '    path: .libops/template-contract.yaml' "${lock}"
-          grep -Eq '^    digest: sha256:[0-9a-f]{64}$' "${lock}"
+          grep -Eq '^    commit: [0-9a-f]{40}([0-9a-f]{24})?$' "${lock}"
+          grep -Fxq '        path: .libops/template-contract.yaml' "${lock}"
+          grep -Eq '^        digest: sha256:[0-9a-f]{64}$' "${lock}"
           awk -v expected="${EXPECTED_TEMPLATE_LOCK_REVISION}" '
             $0 == "componentDefaults:" { in_defaults = 1; next }
-            in_defaults && $0 == "  revision: " expected { found = 1 }
+            in_defaults && $0 == "    revision: " expected { found = 1 }
             END { exit(found ? 0 : 1) }
           ' "${lock}"
           if [ -n "${TEMPLATE_REPO}" ]; then
-            grep -Fxq "  repository: ${TEMPLATE_REPO}" "${lock}"
+            grep -Fxq "    repository: ${TEMPLATE_REPO}" "${lock}"
           fi
 
       - name: Run sitectl verify

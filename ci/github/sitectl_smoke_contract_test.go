@@ -34,8 +34,10 @@ func TestSitectlSmokeWorkflowCanGateRetainedTemplateProvenance(t *testing.T) {
 		"      - name: Verify retained template provenance",
 		"if: ${{ inputs.expected-template-lock-revision != '' }}",
 		"lock=\"${PROJECT_DIR}/.libops/template.lock.yaml\"",
-		"grep -Eq '^  commit: [0-9a-f]{40}([0-9a-f]{24})?$'",
-		"grep -Eq '^    digest: sha256:[0-9a-f]{64}$'",
+		"grep -Eq '^    commit: [0-9a-f]{40}([0-9a-f]{24})?$'",
+		"grep -Eq '^        digest: sha256:[0-9a-f]{64}$'",
+		"$0 == \"    revision: \" expected",
+		"grep -Fxq \"    repository: ${TEMPLATE_REPO}\"",
 		"$0 == \"componentDefaults:\"",
 	} {
 		if !strings.Contains(workflow, required) {
