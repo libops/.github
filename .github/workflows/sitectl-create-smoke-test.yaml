@@ -97,6 +97,16 @@ on:
         required: false
         type: string
         default: ""
+      package-versions:
+        description: Space-separated package=version assignments. Every installed package must have exactly one SemVer version when set.
+        required: false
+        type: string
+        default: ""
+      allow-unversioned-packages:
+        description: Permit compatibility installs without package-versions. Disable this for release smoke tests.
+        required: false
+        type: boolean
+        default: true
       runner:
         description: GitHub Actions runner label.
         required: false
@@ -174,6 +184,8 @@ jobs:
           SITECTL_REF: ${{ inputs.sitectl-ref }}
           SITECTL_PATH: ${{ inputs.sitectl-path }}
           PACKAGES: ${{ inputs.packages }}
+          PACKAGE_VERSIONS: ${{ inputs.package-versions }}
+          ALLOW_UNVERSIONED_PACKAGES: ${{ inputs.allow-unversioned-packages }}
         run: |
           set -euo pipefail
 
@@ -283,7 +295,7 @@ jobs:
             go_cache_dependency_path+="${sitectl_path}/go.sum"
           fi
           diagnostics_suffix="$(
-            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${TEMPLATE_REPO}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${LOCAL_PLUGIN_REPOSITORY}" "${LOCAL_PLUGIN_REF}" "${SITECTL_REPOSITORY}" "${SITECTL_REF}" \
+            printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' "${PLUGIN}" "${CREATE_DEFINITION}" "${project_path}" "${CHECKOUT_SOURCE}" "${CREATE_ARGS}" "${TEMPLATE_REPO}" "${IMAGE_TAGS}" "${IMAGES}" "${RUN_VERIFY}" "${VERIFY_ARGS}" "${LOCAL_PLUGIN_REPOSITORY}" "${LOCAL_PLUGIN_REF}" "${SITECTL_REPOSITORY}" "${SITECTL_REF}" "${PACKAGE_VERSIONS}" "${ALLOW_UNVERSIONED_PACKAGES}" \
               | sha256sum \
               | cut -c1-12
           )"
@@ -311,9 +323,13 @@ jobs:
           path: ${{ inputs.sitectl-path }}
 
       - name: Install sitectl
-        uses: libops/.github/.github/actions/install-sitectl@3ef8469c16c40842cc1b0b9195df2850ad8e616f # main
+        # Release this workflow only after advancing this SHA to the commit that
+        # contains the package-versions contract in install-sitectl.
+        uses: libops/.github/.github/actions/install-sitectl@90a9272d0829c878a682ba636bc155c2b06c7939 # main
         with:
           packages: ${{ steps.smoke.outputs.packages }}
+          package-versions: ${{ inputs.package-versions }}
+          allow-unversioned: ${{ inputs.allow-unversioned-packages }}
 
       - name: Set up Go
         if: ${{ inputs.local-plugin-path != '' || inputs.sitectl-repository != '' }}
@@ -464,6 +480,8 @@ jobs:
           LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
           SITECTL_REPOSITORY: ${{ inputs.sitectl-repository }}
           SITECTL_REF: ${{ inputs.sitectl-ref }}
+          PACKAGE_VERSIONS: ${{ inputs.package-versions }}
+          ALLOW_UNVERSIONED_PACKAGES: ${{ inputs.allow-unversioned-packages }}
           CHECKOUT_SOURCE: ${{ steps.smoke.outputs.checkout-source }}
           PROJECT_DIR: ${{ steps.smoke.outputs.project-dir }}
           DIAGNOSTICS_DIR: ${{ steps.smoke.outputs.diagnostics-dir }}
@@ -484,6 +502,8 @@ jobs:
             echo "local-plugin-path=${LOCAL_PLUGIN_PATH}"
             echo "sitectl-repository=${SITECTL_REPOSITORY}"
             echo "sitectl-ref=${SITECTL_REF}"
+            echo "package-versions=${PACKAGE_VERSIONS}"
+            echo "allow-unversioned-packages=${ALLOW_UNVERSIONED_PACKAGES}"
             echo "checkout-source=${CHECKOUT_SOURCE}"
             echo "project-dir=${PROJECT_DIR}"
             echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
