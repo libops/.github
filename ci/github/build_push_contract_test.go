@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -43,6 +44,26 @@ func requireContains(t *testing.T, source, value string) {
 	if !strings.Contains(source, value) {
 		t.Errorf("contract is missing %q", value)
 	}
+}
+
+func workflowRunScript(t *testing.T, step string) string {
+	t.Helper()
+	const marker = "        run: |\n"
+	start := strings.Index(step, marker)
+	if start == -1 {
+		t.Fatal("workflow step has no run script")
+	}
+	lines := strings.Split(step[start+len(marker):], "\n")
+	for index, line := range lines {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "          ") {
+			t.Fatalf("workflow run line is not indented as a script: %q", line)
+		}
+		lines[index] = strings.TrimPrefix(line, "          ")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")) + "\n"
 }
 
 func artifactKey(repository, image, tag, aliases, runID string) string {
@@ -123,9 +144,10 @@ func TestExpectedMainGuardsEveryRegistryWrite(t *testing.T) {
 
 func TestDigestArtifactsRepairMixedAttempts(t *testing.T) {
 	workflow := workflowSource(t)
+	buildMetadata := stepBlock(t, workflow, "      - name: Resolve publication metadata\n", "      - name: GHCR Login\n")
 
-	if got := strings.Count(workflow, `"$ADDITIONAL_IMAGE_NAMES" "$GITHUB_RUN_ID" |`); got != 2 {
-		t.Errorf("want both artifact keys stable per workflow run, got %d stable definitions", got)
+	if got := strings.Count(workflow, `"$ADDITIONAL_IMAGE_NAMES" "$GITHUB_RUN_ID" |`); got != 3 {
+		t.Errorf("want build, merge, and cleanup keys stable per workflow run, got %d stable definitions", got)
 	}
 	if strings.Contains(workflow, `"$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"`) {
 		t.Error("artifact key must not vary across failed-job rerun attempts")
@@ -133,11 +155,11 @@ func TestDigestArtifactsRepairMixedAttempts(t *testing.T) {
 	if first, second := artifactKey("libops/api", "ghcr.io/libops/api", "main", `["dash"]`, "123"), artifactKey("libops/api", "ghcr.io/libops/api", "main", `["dash"]`, "123"); first != second {
 		t.Fatalf("same workflow run produced different artifact keys: %s != %s", first, second)
 	}
-	if got := strings.Count(workflow, "ci-${artifact_key}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"); got != 1 {
+	if got := strings.Count(buildMetadata, "ci-${artifact_key}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"); got != 1 {
 		t.Errorf("want the run attempt isolated in the temporary registry tag, got %d definitions", got)
 	}
-	if got := strings.Count(workflow, "GITHUB_RUN_ATTEMPT"); got != 1 {
-		t.Errorf("run attempt leaked outside temporary registry tags: got %d references", got)
+	if got := strings.Count(buildMetadata, "GITHUB_RUN_ATTEMPT"); got != 1 {
+		t.Errorf("build metadata must use the run attempt only in temporary registry tags: got %d references", got)
 	}
 
 	upload := stepBlock(t, workflow, "      - name: Preserve platform digests\n", "      - name: record image tag\n")
@@ -149,6 +171,123 @@ func TestDigestArtifactsRepairMixedAttempts(t *testing.T) {
 	requireContains(t, download, "pattern: ${{ steps.metadata.outputs.artifact-name }}-*")
 	requireContains(t, download, "merge-multiple: true")
 	requireContains(t, workflow, "sources+=(\"${target_image}@${digest}\")")
+}
+
+func TestStagingCleanupRetainsRepairRefsAndDeletesOnlyGARTags(t *testing.T) {
+	workflow := workflowSource(t)
+	cleanupStart := strings.Index(workflow, "  cleanup:\n")
+	if cleanupStart == -1 {
+		t.Fatal("workflow is missing the staging cleanup job")
+	}
+	cleanup := workflow[cleanupStart:]
+	gar := stepBlock(t, cleanup, "      - name: Remove exact GAR staging tags after verified merge\n", "      - name: Report retained staging tags\n")
+
+	requireContains(t, cleanup, "needs:\n      - build\n      - merge")
+	requireContains(t, cleanup, "if: ${{ always() }}")
+	requireContains(t, cleanup, "continue-on-error: true")
+	requireContains(t, cleanup, "Publication did not merge successfully; retaining all exact ci-* tags")
+	requireContains(t, cleanup, "GHCR has no conditional tag-only delete")
+	requireContains(t, gar, "needs.merge.result == 'success'")
+	requireContains(t, cleanup, `for attempt in $(seq 1 "$GITHUB_RUN_ATTEMPT"); do`)
+
+	// GAR exposes a true tag resource. Delete that exact resource and never a
+	// package, image, version, digest, or manifest.
+	requireContains(t, gar, `/packages/${encoded_package}/tags/${staging_tag}`)
+	requireContains(t, gar, `GAR tag cleanup lacks artifactregistry.tags.delete`)
+	for _, unsafe := range []string{
+		"/versions/",
+		"gh api --method DELETE",
+		"docker push",
+		"docker images delete",
+		"manifests/sha256:",
+		"--delete-tags",
+		"crane delete",
+		"regctl manifest delete",
+		"docker buildx imagetools rm",
+	} {
+		if strings.Contains(cleanup, unsafe) {
+			t.Errorf("staging cleanup contains unsafe deletion primitive %q", unsafe)
+		}
+	}
+	if got := strings.Count(gar, "--request DELETE"); got != 1 {
+		t.Fatalf("GAR cleanup DELETE primitives = %d, want one exact tag-resource call", got)
+	}
+}
+
+func TestGARTagCleanupExecutesExactEncodedTagDeletes(t *testing.T) {
+	workflow := workflowSource(t)
+	cleanup := workflow[strings.Index(workflow, "  cleanup:\n"):]
+	gar := stepBlock(t, cleanup, "      - name: Remove exact GAR staging tags after verified merge\n", "      - name: Report retained staging tags\n")
+	scriptPath := filepath.Join(t.TempDir(), "cleanup-gar.sh")
+	if err := os.WriteFile(scriptPath, []byte(workflowRunScript(t, gar)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := t.TempDir()
+	curlLog := filepath.Join(t.TempDir(), "curl.log")
+	fakeCurl := `#!/usr/bin/env bash
+set -euo pipefail
+output=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = --output ]; then output="$argument"; fi
+  previous="$argument"
+done
+if [ -n "$output" ]; then printf '{}\n' > "$output"; fi
+printf '%s\n' "$*" >> "$FAKE_CURL_LOG"
+printf '%s' "${FAKE_CURL_STATUS:-200}"
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "curl"), []byte(fakeCurl), 0700); err != nil {
+		t.Fatal(err)
+	}
+	run := func(token, status string) string {
+		t.Helper()
+		if err := os.WriteFile(curlLog, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", scriptPath) // #nosec G204 -- fixed test script with a test-owned curl fixture.
+		cmd.Env = append(os.Environ(),
+			"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"ACCESS_TOKEN="+token,
+			"ADDITIONAL_GAR_REGISTRY=us-docker.pkg.dev/example-project/public",
+			`ADDITIONAL_IMAGE_NAMES=["nested/alias"]`,
+			"ARTIFACT_KEY=0123456789abcdef01234567",
+			"IMAGE_NAME=api",
+			"PRIMARY_IMAGE=ghcr.io/libops/api",
+			"PRIMARY_KIND=ghcr",
+			"PRIMARY_REGISTRY=ghcr.io/libops",
+			"GITHUB_REPOSITORY=libops/api",
+			"GITHUB_RUN_ATTEMPT=2",
+			"ARTIFACT_REGISTRY_API_ROOT=https://artifact.test/v1",
+			"FAKE_CURL_LOG="+curlLog,
+			"FAKE_CURL_STATUS="+status,
+		)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("GAR cleanup failed: %v\n%s", err, output)
+		}
+		data, err := os.ReadFile(curlLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	if log := run("", "200"); log != "" {
+		t.Fatalf("unauthenticated cleanup made registry calls:\n%s", log)
+	}
+	log := run("test-token", "404")
+	lines := strings.Split(strings.TrimSpace(log), "\n")
+	if len(lines) != 8 {
+		t.Fatalf("GAR cleanup calls = %d, want 8 exact tags:\n%s", len(lines), log)
+	}
+	for _, required := range []string{
+		"--request DELETE",
+		"https://artifact.test/v1/projects/example-project/locations/us/repositories/public/packages/api/tags/ci-0123456789abcdef01234567-1-amd64",
+		"https://artifact.test/v1/projects/example-project/locations/us/repositories/public/packages/nested%2Falias/tags/ci-0123456789abcdef01234567-2-arm64",
+	} {
+		if !strings.Contains(log, required) {
+			t.Errorf("GAR cleanup log missing %q:\n%s", required, log)
+		}
+	}
 }
 
 func TestAliasesFanOutOneVerifiedBuild(t *testing.T) {
