@@ -5,6 +5,14 @@ inputs:
     description: Space-separated sitectl apt packages to install.
     required: false
     default: sitectl
+  package-versions:
+    description: Space-separated package=version assignments. When set, every package must have exactly one SemVer version.
+    required: false
+    default: ""
+  allow-unversioned:
+    description: Permit compatibility installs without package-versions. Unversioned installs emit a warning and resolve the latest package available at run time.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -12,27 +20,6 @@ runs:
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
-      run: |
-        set -euo pipefail
-
-        packages="${PACKAGES}"
-        if [ -z "${packages// }" ]; then
-          echo "::error::packages input cannot be empty"
-          exit 1
-        fi
-
-        read -r -a package_args <<< "${packages}"
-        for package in "${package_args[@]}"; do
-          if [[ ! "${package}" =~ ^sitectl(-[A-Za-z0-9.+_-]+)?$ ]]; then
-            echo "::error::Invalid sitectl package: ${package}"
-            exit 1
-          fi
-        done
-
-        sudo install -d -m 0755 /usr/share/keyrings
-        curl -fsSL https://packages.libops.io/sitectl/sitectl-archive-keyring.asc \
-          | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/sitectl-archive-keyring.gpg
-        echo "deb [signed-by=/usr/share/keyrings/sitectl-archive-keyring.gpg] https://packages.libops.io/sitectl ./" \
-          | sudo tee /etc/apt/sources.list.d/sitectl.list >/dev/null
-        sudo apt-get update
-        sudo apt-get install -y "${package_args[@]}"
+        PACKAGE_VERSIONS: ${{ inputs.package-versions }}
+        ALLOW_UNVERSIONED: ${{ inputs.allow-unversioned }}
+      run: "${GITHUB_ACTION_PATH}/install.sh"
