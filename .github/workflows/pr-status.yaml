@@ -1,0 +1,41 @@
+name: PR status aggregation
+
+on:
+  workflow_call:
+    inputs:
+      needs-json:
+        description: "The caller's complete toJSON(needs) value"
+        required: true
+        type: string
+
+# This workflow only evaluates caller-provided status data. It must never gain
+# repository, identity-token, package, registry, or publication permissions.
+permissions: {}
+
+jobs:
+  merge:
+    name: merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      NEEDS_JSON: ${{ inputs.needs-json }}
+    steps:
+      - name: Require every dependency to succeed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! jq -e '
+            type == "object" and
+            length > 0 and
+            all(
+              to_entries[];
+              (.key | test("^[A-Za-z_][A-Za-z0-9_-]*$")) and
+              (.value | type == "object") and
+              (.value.result | type == "string") and
+              (.value.outputs | type == "object") and
+              (.value.result == "success")
+            )
+          ' <<< "$NEEDS_JSON" >/dev/null 2>&1; then
+            echo "Dependency status input must be a non-empty toJSON(needs) object and every dependency result must be success." >&2
+            exit 1
+          fi
