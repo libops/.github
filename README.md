@@ -2,6 +2,37 @@
 
 This repository owns the reusable delivery workflows used by LibOps repositories. Callers must pin reusable workflows to a full commit SHA so a reviewed workflow—not a movable branch or tag—defines every privileged publication.
 
+## sitectl create smoke tests
+
+`.github/workflows/sitectl-create-smoke-test.yaml` exercises a template with the
+published `sitectl` host and plugin packages. Release and compatibility tests
+should pass an exact SemVer for every package so a rerun exercises the same CLI
+bits:
+
+```yaml
+jobs:
+  smoke:
+    uses: libops/.github/.github/workflows/sitectl-create-smoke-test.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    with:
+      plugin: omeka-s
+      packages: sitectl sitectl-omeka-s
+      package-versions: sitectl=0.39.0 sitectl-omeka-s=0.6.0
+      allow-unversioned-packages: false
+```
+
+`package-versions` is a one-to-one `package=version` map: missing, duplicate,
+extra, or non-SemVer assignments fail before apt runs. The reusable workflow
+retains `allow-unversioned-packages: true` only for existing callers. That mode
+emits a warning and installs whatever version is newest in the apt repository at
+run time; it is unsuitable for a release gate.
+
+The workflow invokes the repository's composite install action through an
+immutable commit SHA. Because this repository squash-merges pull requests, an
+action contract change and its reusable-workflow adoption require two green
+PRs. Merge the action first, capture the resulting main SHA, then pin the
+workflow to that merged SHA in the second PR. Only advertise the second PR's
+merged workflow SHA to callers.
+
 ## Pull request status aggregation
 
 `.github/workflows/pr-status.yaml` provides one credential-free branch-protection
