@@ -6,7 +6,7 @@ on:
       go-version:
         required: false
         type: string
-        default: ">=1.26.1"
+        default: "1.26.5"
       goreleaser-args:
         required: false
         type: string
@@ -18,13 +18,13 @@ on:
         required: false
         type: boolean
         default: true
-      run-goreleaser:
-        description: Run GoReleaser before package publication
+      release-mode:
+        description: Full release, Homebrew-only recovery, or package-only recovery
         required: false
-        type: boolean
-        default: true
+        type: string
+        default: full
       release-version:
-        description: Existing semver tag to republish when run-goreleaser is false
+        description: Existing semver tag for a recovery mode
         required: false
         type: string
         default: ""
@@ -37,55 +37,71 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: sitectl-plugin-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   goreleaser:
+    if: ${{ inputs.release-mode != 'packages-only' }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Validate release mode
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_MODE: ${{ inputs.release-mode }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_MODE" in
+            full)
+              if [[ "$REF_TYPE" != "tag" || -n "$RELEASE_VERSION" ]]; then
+                echo "full releases require a tag ref and no release-version input" >&2
+                exit 1
+              fi
+              if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                echo "release $GITHUB_REF_NAME already exists; use a recovery mode" >&2
+                exit 1
+              fi
+              ;;
+            homebrew-only)
+              if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "homebrew-only recovery requires release-version in vMAJOR.MINOR.PATCH form" >&2
+                exit 1
+              fi
+              gh release view "$RELEASE_VERSION" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json isDraft \
+                --jq 'select(.isDraft == false) | .isDraft' \
+                | grep -Fxq false
+              ;;
+            *)
+              echo "release-mode must be full, homebrew-only, or packages-only" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release-version || github.ref }}
 
       - name: Checkout sitectl SDK
-        if: ${{ inputs.run-goreleaser && hashFiles('go.work') != '' }}
+        if: ${{ hashFiles('go.work') != '' }}
         shell: bash
         run: |
           set -euo pipefail
           git clone --depth=1 --branch "${{ inputs.sitectl-ref }}" https://github.com/libops/sitectl ../sitectl
 
       - name: Set up Go
-        if: ${{ inputs.run-goreleaser }}
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version: ${{ inputs.go-version }}
 
-      - name: Validate release mode
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.release-version }}
-          RUN_GORELEASER: ${{ inputs.run-goreleaser }}
-        run: |
-          set -euo pipefail
-          if [[ "$RUN_GORELEASER" == "true" ]]; then
-            if [[ -n "$RELEASE_VERSION" ]]; then
-              echo "release-version is only valid when run-goreleaser is false" >&2
-              exit 1
-            fi
-            exit 0
-          fi
-          if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "package-only recovery requires release-version in vMAJOR.MINOR.PATCH form" >&2
-            exit 1
-          fi
-          gh release view "$RELEASE_VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json isDraft \
-            --jq 'select(.isDraft == false) | .isDraft' \
-            | grep -Fxq false
-
       - name: Run GoReleaser
-        if: ${{ inputs.run-goreleaser }}
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
@@ -94,11 +110,90 @@ jobs:
           version: v2.17.0
           args: ${{ inputs.goreleaser-args }}
         env:
+          GORELEASER_DISABLE_SCM_RELEASE: ${{ inputs.release-mode == 'homebrew-only' }}
           GITHUB_TOKEN: ${{ github.token }}
           HOMEBREW_REPO_TOKEN: ${{ secrets.HOMEBREW_REPO }}
 
+      - name: Verify Homebrew publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_REPO }}
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION#v}"
+          formula="${PACKAGE_NAME}.rb"
+          if gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/libops/homebrew/contents/${formula}?ref=main" 2>/dev/null \
+            | grep -Fq "version \"${version}\""; then
+            exit 0
+          fi
+          branch="${PACKAGE_NAME}-${version}"
+          count="$(gh pr list \
+            --repo libops/homebrew \
+            --head "$branch" \
+            --state all \
+            --json state \
+            --jq 'map(select(.state == "OPEN" or .state == "MERGED")) | length')"
+          if [[ "$count" -lt 1 ]]; then
+            echo "Homebrew formula ${formula} is neither published nor represented by a valid PR" >&2
+            exit 1
+          fi
+
+  publish-linux-packages:
+    needs: goreleaser
+    if: >-
+      ${{
+        always() &&
+        inputs.publish-package-repo &&
+        inputs.release-mode != 'homebrew-only' &&
+        (needs.goreleaser.result == 'success' ||
+          (inputs.release-mode == 'packages-only' && needs.goreleaser.result == 'skipped'))
+      }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Validate package publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_MODE: ${{ inputs.release-mode }}
+          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_MODE" in
+            full)
+              if [[ "$REF_TYPE" != "tag" ]]; then
+                echo "full package publication requires a tag ref" >&2
+                exit 1
+              fi
+              ;;
+            packages-only)
+              if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "packages-only recovery requires release-version in vMAJOR.MINOR.PATCH form" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "invalid package publication mode: $RELEASE_MODE" >&2
+              exit 1
+              ;;
+          esac
+          gh release view "$RELEASE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft \
+            --jq 'select(.isDraft == false) | .isDraft' \
+            | grep -Fxq false
+
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
       - name: Authenticate to Google Cloud
-        if: ${{ inputs.publish-package-repo }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL }}
@@ -106,7 +201,6 @@ jobs:
           create_credentials_file: true
 
       - name: Checkout Package Publisher
-        if: ${{ inputs.publish-package-repo }}
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           repository: libops/terraform-linux-packages
@@ -115,7 +209,6 @@ jobs:
           path: .libops-packages
 
       - name: Publish Linux package repository
-        if: ${{ inputs.publish-package-repo }}
         shell: bash
         working-directory: .libops-packages
         env:
