@@ -2,6 +2,42 @@
 
 This repository owns the reusable delivery workflows used by LibOps repositories. Callers must pin reusable workflows to a full commit SHA so a reviewed workflow—not a movable branch or tag—defines every privileged publication.
 
+## Pull request status aggregation
+
+`.github/workflows/pr-status.yaml` provides one credential-free branch-protection
+check for a caller's real pull-request jobs. Give the caller job the ID and name
+`run`, make it depend on every required job, run it with `always()`, and pass the
+complete `toJSON(needs)` value:
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make test
+
+  run:
+    name: run
+    if: ${{ always() }}
+    needs: [lint, test]
+    permissions: {}
+    uses: libops/.github/.github/workflows/pr-status.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    with:
+      needs-json: ${{ toJSON(needs) }}
+```
+
+The reusable job is named `merge`, so this caller receives the exact check name
+`run / merge`. Require that check in branch protection. It rejects malformed or
+empty input and fails unless every dependency result is exactly `success`; a
+failed, cancelled, or skipped dependency therefore blocks the merge. Do not put
+secrets in job outputs because `toJSON(needs)` includes those outputs, even
+though this workflow neither prints nor publishes the input.
+
 ## Container publication
 
 `.github/workflows/build-push.yaml` builds native architecture images and assembles one multi-platform manifest. The primary registry defaults to GHCR. Set `additional-gar-registry` when the same image also needs to run in Google Cloud. Both registries receive manifests assembled from the exact native digests produced by the same workflow run.

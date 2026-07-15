@@ -38,5 +38,5 @@ jobs:
       - name: Validate workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
-      - name: Validate image publisher contracts
-        run: go test ./ci/github/build_push_contract_test.go
+      - name: Validate reusable workflow contracts
+        run: go test ./ci/github/build_push_contract_test.go ./ci/github/pr_status_contract_test.go
