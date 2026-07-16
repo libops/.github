@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const linuxPackagePublisherCommit = "fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f"
+
 func pluginReleaseWorkflow(t *testing.T) string {
 	t.Helper()
 	return githubReadFile(t, ".github/workflows/sitectl-plugin-goreleaser.yaml")
@@ -169,14 +171,102 @@ func TestPostAuthenticationPackageShellUsesValidatedEnvironment(t *testing.T) {
 	for _, required := range []string{
 		"PACKAGE_NAME: ${{ inputs.package-name }}",
 		"RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}",
-		`PACKAGE_NAME="${PACKAGE_NAME}"`,
-		`RELEASE_VERSION="${RELEASE_VERSION}"`,
+		"APTLY_LABEL: sitectl",
+		"APTLY_PUBLIC_KEY_NAME: sitectl-archive-keyring",
+		`EXCLUDED_PACKAGE_NAMES: ""`,
+		"GCS_BUCKET_PREFIX: sitectl",
+		"PACKAGE_TOOLS_IMAGE: ${{ steps.package-tools.outputs.image }}",
+		"EXPECTED_PACKAGE_TOOLS_IMAGE_ID: ${{ steps.package-tools.outputs.image-id }}",
+		"PACKAGE_PUBLISHER_SHA: " + linuxPackagePublisherCommit,
+		"run: bash scripts/publish-release-from-environment.sh",
 	} {
 		requireContains(t, publish, required)
 	}
-	run := workflowRunScript(t, publish)
+	runStart := strings.Index(publish, "        run: ")
+	if runStart == -1 {
+		t.Fatal("package publication step has no direct run command")
+	}
+	run := publish[runStart:]
 	if strings.Contains(run, "${{ inputs.package-name }}") || strings.Contains(run, "${{ inputs.release-version") {
 		t.Error("post-authentication package shell interpolates caller input directly")
+	}
+	if strings.Contains(run, "make package") {
+		t.Error("credentialed package publication must bypass GNU Make")
+	}
+}
+
+func TestPackagePublisherIsPinnedAndPreparedBeforeAuthentication(t *testing.T) {
+	packages := packageJob(t)
+	checkout := stepBlock(
+		t,
+		packages,
+		"      - name: Checkout exact package publisher\n",
+		"      - name: Verify exact package publisher\n",
+	)
+	verify := stepBlock(
+		t,
+		packages,
+		"      - name: Verify exact package publisher\n",
+		"      - name: Validate mandatory Linux package exclusions\n",
+	)
+	exclusions := stepBlock(
+		t,
+		packages,
+		"      - name: Validate mandatory Linux package exclusions\n",
+		"      - name: Build exact package tools image\n",
+	)
+	build := stepBlock(
+		t,
+		packages,
+		"      - name: Build exact package tools image\n",
+		"      - name: Authenticate to Google Cloud\n",
+	)
+
+	for _, required := range []string{
+		"repository: libops/terraform-linux-packages",
+		"ref: " + linuxPackagePublisherCommit,
+		"persist-credentials: false",
+	} {
+		requireContains(t, checkout, required)
+	}
+	for _, required := range []string{
+		"PACKAGE_PUBLISHER_SHA: " + linuxPackagePublisherCommit,
+		`actual_sha="$(git rev-parse HEAD)"`,
+		`[[ "$actual_sha" != "$PACKAGE_PUBLISHER_SHA" ]]`,
+	} {
+		requireContains(t, verify, required)
+	}
+	for _, required := range []string{
+		"PACKAGE_NAME: ${{ inputs.package-name }}",
+		`EXCLUDED_PACKAGE_NAMES: ""`,
+		"run: bash scripts/validate-package-exclusions.sh",
+	} {
+		requireContains(t, exclusions, required)
+	}
+	for _, required := range []string{
+		"PACKAGE_PUBLISHER_SHA: " + linuxPackagePublisherCommit,
+		`image="libops/terraform-linux-packages:publisher-${PACKAGE_PUBLISHER_SHA}"`,
+		`docker build --tag "$image" .`,
+		`docker image inspect --format '{{.Id}}' "$image"`,
+		`[[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]`,
+		`echo "image-id=$image_id"`,
+	} {
+		requireContains(t, build, required)
+	}
+
+	workflow := pluginReleaseWorkflow(t)
+	if strings.Contains(workflow, "excluded-package-names:") ||
+		strings.Contains(packages, "EXCLUDED_PACKAGE_NAMES: ${{") {
+		t.Error("plugin callers must not be able to add Linux package exclusions")
+	}
+	for _, forbidden := range []string{
+		"ref: main",
+		"terraform-linux-packages:main",
+		"docker pull",
+	} {
+		if strings.Contains(packages, forbidden) {
+			t.Errorf("package publication contains mutable publisher behavior %q", forbidden)
+		}
 	}
 }
 
@@ -470,7 +560,7 @@ func TestPackageRecoveryRequiresDefaultBranch(t *testing.T) {
 		t,
 		packageJob(t),
 		"      - name: Validate package publication\n",
-		"      - name: Authenticate to Google Cloud\n",
+		"      - name: Checkout exact package publisher\n",
 	)
 	script := filepath.Join(t.TempDir(), "validate-packages.sh")
 	if err := os.WriteFile(script, []byte(workflowRunScript(t, step)), 0700); err != nil {
@@ -521,7 +611,7 @@ func TestFullPackagePublicationSupportsTagAndDefaultBranchRecovery(t *testing.T)
 		t,
 		packageJob(t),
 		"      - name: Validate package publication\n",
-		"      - name: Authenticate to Google Cloud\n",
+		"      - name: Checkout exact package publisher\n",
 	)
 	script := filepath.Join(t.TempDir(), "validate-full-packages.sh")
 	if err := os.WriteFile(script, []byte(workflowRunScript(t, step)), 0700); err != nil {
