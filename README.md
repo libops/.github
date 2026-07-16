@@ -7,9 +7,11 @@ This repository owns the reusable delivery workflows used by LibOps repositories
 `.github/workflows/sitectl-plugin-goreleaser.yaml` separates a sitectl release
 into three privilege domains:
 
-- `release` builds the caller's tagged source and publishes the GitHub release.
-  GoReleaser is explicitly prevented from publishing Homebrew content and
-  receives only the caller repository token.
+- `release` validates one exact release tag, checks out that tag, and publishes
+  the GitHub release. A default-branch recovery may target an existing tag whose
+  release is already published, mutable, and has zero assets. GoReleaser is
+  explicitly prevented from publishing Homebrew content and receives only the
+  caller repository token.
 - `homebrew` checks out this repository at the exact commit that defined the
   reusable job. It does not check out or execute caller or tagged source. The
   reconciler resolves the published tag to its source commit, downloads
@@ -19,7 +21,15 @@ into three privilege domains:
 - `publish-linux-packages` receives the GCP identity permission. A full release
   cannot publish packages until Homebrew reconciliation succeeds.
 
-`full` runs all three stages from a new `vMAJOR.MINOR.PATCH` tag.
+`full` runs all three stages either from a `vMAJOR.MINOR.PATCH` tag with no
+`release-version` input or from the source default branch with an exact
+`release-version`. The latter is the secure recovery path for a tag whose
+GitHub release was published before its assets were uploaded. Tag-triggered
+publication may create an absent release, while default-branch recovery requires
+the exact release to already exist. The preflight rejects draft, prerelease, or
+immutable releases and any release that already has assets. Both paths check out
+`refs/tags/<version>`, verify the checkout resolves to that tag's commit, and
+require the commit to be reachable from the source default branch.
 `homebrew-only` reruns the same post-release reconciler for an existing stable
 release and is accepted only from the source repository's default branch.
 `packages-only` republishes an existing stable release to the Linux package
@@ -39,9 +49,31 @@ tap's current validation contract.
 
 Callers must pass `HOMEBREW_REPO` as a fine-grained token limited to the
 contents and pull-request operations needed in `libops/homebrew`. Continue to
-pin this reusable workflow to a full commit SHA:
+pin this reusable workflow to a full commit SHA. Force every tag dispatch to
+`full` in the reusable-workflow call; this prevents a no-input dispatch created
+by the release bump workflow from inheriting a manual recovery default. The
+manual default can remain whichever recovery mode is most useful from the
+default branch:
 
 ```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      release-mode:
+        description: Full release or an explicit recovery mode
+        required: true
+        type: choice
+        default: homebrew-only
+        options:
+          - full
+          - homebrew-only
+          - packages-only
+      release-version:
+        description: Exact vMAJOR.MINOR.PATCH tag for recovery
+        required: false
+        type: string
+        default: ""
+
 jobs:
   release:
     uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@FULL_40_CHARACTER_COMMIT_SHA
@@ -52,7 +84,14 @@ jobs:
       HOMEBREW_REPO: ${{ secrets.HOMEBREW_REPO }}
     with:
       package-name: sitectl-example
+      release-mode: ${{ github.ref_type == 'tag' && 'full' || inputs.release-mode }}
+      release-version: ${{ inputs.release-version || '' }}
+      sitectl-ref: 65cfde137a58ba14aaa9a1512d88b943888872f3
 ```
+
+The shared default uses that same immutable sitectl v1 commit. Callers should
+still pass it explicitly so dependency upgrades remain visible in their own
+review history; never point a release build at `main`.
 
 ## sitectl create smoke tests
 

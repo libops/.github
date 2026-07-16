@@ -317,28 +317,44 @@ func (r *reconciler) validateInputs(ctx context.Context) (string, error) {
 	}
 	switch r.config.ReleaseMode {
 	case "full":
-		if r.config.RefType != "tag" || r.config.ReleaseVersion != "" {
-			return "", errors.New("full releases require a tag ref and no release-version input")
+		if _, err := parseTaggedSemver(r.config.ReleaseVersion); err != nil {
+			return "", fmt.Errorf("full release-version: %w", err)
 		}
-		if _, err := parseTaggedSemver(r.config.RefName); err != nil {
-			return "", fmt.Errorf("full release ref: %w", err)
+		switch r.config.RefType {
+		case "tag":
+			if r.config.RefName != r.config.ReleaseVersion {
+				return "", errors.New("full release tag ref must match release-version")
+			}
+		case "branch":
+			if err := r.requireSourceDefaultBranch(ctx, "full recovery"); err != nil {
+				return "", err
+			}
+		default:
+			return "", errors.New("full reconciliation requires a tag or default-branch recovery")
 		}
-		return r.config.RefName, nil
+		return r.config.ReleaseVersion, nil
 	case "homebrew-only":
 		if _, err := parseTaggedSemver(r.config.ReleaseVersion); err != nil {
 			return "", fmt.Errorf("homebrew-only release-version: %w", err)
 		}
-		var repo repository
-		if err := r.apiJSON(ctx, r.config.SourceToken, http.MethodGet, "/repos/"+r.config.SourceRepo, nil, &repo); err != nil {
-			return "", fmt.Errorf("resolve source default branch: %w", err)
-		}
-		if repo.DefaultBranch == "" || r.config.RefType != "branch" || r.config.RefName != repo.DefaultBranch {
-			return "", fmt.Errorf("homebrew-only recovery must run from the repository default branch (%s)", repo.DefaultBranch)
+		if err := r.requireSourceDefaultBranch(ctx, "homebrew-only recovery"); err != nil {
+			return "", err
 		}
 		return r.config.ReleaseVersion, nil
 	default:
 		return "", errors.New("RELEASE_MODE must be full or homebrew-only")
 	}
+}
+
+func (r *reconciler) requireSourceDefaultBranch(ctx context.Context, operation string) error {
+	var repo repository
+	if err := r.apiJSON(ctx, r.config.SourceToken, http.MethodGet, "/repos/"+r.config.SourceRepo, nil, &repo); err != nil {
+		return fmt.Errorf("resolve source default branch: %w", err)
+	}
+	if repo.DefaultBranch == "" || r.config.RefType != "branch" || r.config.RefName != repo.DefaultBranch {
+		return fmt.Errorf("%s must run from the repository default branch (%s)", operation, repo.DefaultBranch)
+	}
+	return nil
 }
 
 func (r *reconciler) resolveRelease(ctx context.Context, version string) (resolvedRelease, error) {

@@ -522,6 +522,34 @@ func TestHomebrewRecoveryRequiresSourceDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestFullReconciliationSupportsTagAndDefaultBranchRecovery(t *testing.T) {
+	for name, ref := range map[string][2]string{
+		"tag":                     {"tag", testVersion},
+		"default branch recovery": {"branch", "main"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newGitHubFixture(t, testPackage, "0.9.0")
+			defer fixture.close()
+			if err := fixture.runMode("full", ref[0], ref[1], testVersion); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for name, ref := range map[string][2]string{
+		"mismatched tag":  {"tag", "v2.0.0"},
+		"feature branch":  {"branch", "feature"},
+		"unsupported ref": {"pull", "main"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newGitHubFixture(t, testPackage, "0.9.0")
+			defer fixture.close()
+			if err := fixture.runMode("full", ref[0], ref[1], testVersion); err == nil {
+				t.Fatal("invalid full reconciliation ref was accepted")
+			}
+		})
+	}
+}
+
 func newGitHubFixture(t *testing.T, packageName, currentVersion string) *githubFixture {
 	t.Helper()
 	fixture := &githubFixture{
@@ -598,7 +626,7 @@ func (f *githubFixture) close() {
 }
 
 func (f *githubFixture) run() error {
-	return f.runMode("full", "tag", f.version, "")
+	return f.runMode("full", "tag", f.version, f.version)
 }
 
 func (f *githubFixture) runMode(mode, refType, refName, releaseVersion string) error {
