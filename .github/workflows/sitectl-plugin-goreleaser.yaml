@@ -31,7 +31,7 @@ on:
       sitectl-ref:
         required: false
         type: string
-        default: "main"
+        default: "65cfde137a58ba14aaa9a1512d88b943888872f3"
     secrets:
       HOMEBREW_REPO:
         description: Fine-grained token with contents and pull-request access to libops/homebrew
@@ -78,29 +78,108 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.validate_full.outputs.version }}
     steps:
       - name: Validate full release
+        id: validate_full
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_VERSION: ${{ inputs.release-version }}
         run: |
           set -euo pipefail
-          if [[ "$REF_TYPE" != "tag" || -n "$RELEASE_VERSION" || ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "full releases require a vMAJOR.MINOR.PATCH tag ref and no release-version input" >&2
+          readonly semver_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"
+          if [[ -z "$default_branch" ]]; then
+            echo "source repository has no default branch" >&2
             exit 1
           fi
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $GITHUB_REF_NAME already exists; use a recovery mode" >&2
+          version=""
+          case "$REF_TYPE" in
+            tag)
+              if [[ -n "$RELEASE_VERSION" || ! "$REF_NAME" =~ $semver_pattern ]]; then
+                echo "tag-triggered full releases require a vMAJOR.MINOR.PATCH tag ref and no release-version input" >&2
+                exit 1
+              fi
+              version="$REF_NAME"
+              ;;
+            branch)
+              if [[ ! "$RELEASE_VERSION" =~ $semver_pattern ]]; then
+                echo "full recovery requires release-version in vMAJOR.MINOR.PATCH form" >&2
+                exit 1
+              fi
+              if [[ "$REF_NAME" != "$default_branch" ]]; then
+                echo "full recovery must run from the repository default branch (${default_branch})" >&2
+                exit 1
+              fi
+              version="$RELEASE_VERSION"
+              ;;
+            *)
+              echo "full releases require a tag ref or a default-branch recovery" >&2
+              exit 1
+              ;;
+          esac
+
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${version}" --jq .ref)"
+          if [[ "$tag_ref" != "refs/tags/${version}" ]]; then
+            echo "release tag ${version} does not resolve to the exact requested ref" >&2
             exit 1
           fi
+          tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${version}" --jq .sha)"
+          if [[ ! "$tag_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release tag ${version} does not resolve to an exact commit" >&2
+            exit 1
+          fi
+
+          release_state="$(
+            gh api -H "X-GitHub-Api-Version: 2026-03-10" --paginate \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"${version}\") | [.tag_name, .draft, .prerelease, (.published_at != null), .immutable, (.assets | length)] | @tsv"
+          )"
+          readonly expected_empty_release="${version}"$'\tfalse\tfalse\ttrue\tfalse\t0'
+          if [[ "$REF_TYPE" == "branch" && -z "$release_state" ]]; then
+            echo "full recovery requires an existing exact published, non-prerelease, mutable release with zero assets" >&2
+            exit 1
+          fi
+          if [[ -n "$release_state" && "$release_state" != "$expected_empty_release" ]]; then
+            echo "release ${version} must be an exact published, non-prerelease, mutable release with zero assets" >&2
+            exit 1
+          fi
+          {
+            printf 'version=%s\n' "$version"
+            printf 'default_branch=%s\n' "$default_branch"
+            printf 'tag_commit=%s\n' "$tag_commit"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout release source
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           fetch-depth: 0
+          ref: refs/tags/${{ steps.validate_full.outputs.version }}
           persist-credentials: false
+
+      - name: Verify exact release source
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ steps.validate_full.outputs.default_branch }}
+          EXPECTED_COMMIT: ${{ steps.validate_full.outputs.tag_commit }}
+          EXPECTED_VERSION: ${{ steps.validate_full.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag_commit="$(git rev-parse --verify "refs/tags/${EXPECTED_VERSION}^{commit}")"
+          actual_commit="$(git rev-parse --verify "HEAD^{commit}")"
+          default_commit="$(git rev-parse --verify "refs/remotes/origin/${DEFAULT_BRANCH}^{commit}")"
+          if [[ "$tag_commit" != "$EXPECTED_COMMIT" || "$actual_commit" != "$EXPECTED_COMMIT" ]]; then
+            echo "checkout HEAD does not match the exact release tag commit" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$EXPECTED_COMMIT" "$default_commit"; then
+            echo "release tag commit is not reachable from the source default branch" >&2
+            exit 1
+          fi
 
       - name: Checkout sitectl SDK
         if: ${{ hashFiles('go.work') != '' }}
@@ -109,7 +188,19 @@ jobs:
           SITECTL_REF: ${{ inputs.sitectl-ref }}
         run: |
           set -euo pipefail
-          git clone --depth=1 --branch "$SITECTL_REF" https://github.com/libops/sitectl ../sitectl
+          if [[ ! "$SITECTL_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sitectl-ref must be an exact 40-character commit SHA" >&2
+            exit 1
+          fi
+          git init --quiet ../sitectl
+          git -C ../sitectl remote add origin https://github.com/libops/sitectl
+          git -C ../sitectl fetch --quiet --depth=1 origin "$SITECTL_REF"
+          git -C ../sitectl checkout --quiet --detach FETCH_HEAD
+          actual_sitectl_sha="$(git -C ../sitectl rev-parse HEAD)"
+          if [[ "$actual_sitectl_sha" != "$SITECTL_REF" ]]; then
+            echo "sitectl checkout does not match sitectl-ref" >&2
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
@@ -192,7 +283,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_MODE: ${{ inputs.release-mode }}
-          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}
         run: |
           set -euo pipefail
           go run .libops-workflow/ci/github/homebrew-reconcile/main.go
@@ -224,7 +315,8 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_MODE: ${{ inputs.release-mode }}
-          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release-version }}
         run: |
           set -euo pipefail
           require_default_branch() {
@@ -237,10 +329,29 @@ jobs:
           }
           case "$RELEASE_MODE" in
             full)
-              if [[ "$REF_TYPE" != "tag" || ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-                echo "full package publication requires a vMAJOR.MINOR.PATCH tag ref" >&2
+              if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                echo "full package publication requires an exact vMAJOR.MINOR.PATCH version" >&2
                 exit 1
               fi
+              case "$REF_TYPE" in
+                tag)
+                  if [[ -n "$REQUESTED_RELEASE_VERSION" || "$REF_NAME" != "$RELEASE_VERSION" ]]; then
+                    echo "tag-triggered full package publication must match its tag and omit release-version" >&2
+                    exit 1
+                  fi
+                  ;;
+                branch)
+                  require_default_branch
+                  if [[ "$REQUESTED_RELEASE_VERSION" != "$RELEASE_VERSION" ]]; then
+                    echo "full package recovery must use the exact requested release-version" >&2
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "full package publication requires a tag or default-branch recovery" >&2
+                  exit 1
+                  ;;
+              esac
               ;;
             packages-only)
               require_default_branch
@@ -254,11 +365,14 @@ jobs:
               exit 1
               ;;
           esac
-          gh release view "$RELEASE_VERSION" \
+          release_state="$(gh release view "$RELEASE_VERSION" \
             --repo "$GITHUB_REPOSITORY" \
-            --json isDraft,isPrerelease \
-            --jq 'select(.isDraft == false and .isPrerelease == false) | .isDraft' \
-            | grep -Fxq false
+            --json tagName,isDraft,isPrerelease,publishedAt \
+            --jq '[.tagName, .isDraft, .isPrerelease, (.publishedAt != null)] | @tsv')"
+          if [[ "$release_state" != "${RELEASE_VERSION}"$'\tfalse\tfalse\ttrue' ]]; then
+            echo "package publication requires the exact published, non-prerelease release" >&2
+            exit 1
+          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
@@ -288,7 +402,7 @@ jobs:
           APTLY_GPG_PASSPHRASE_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET }}
           LOCK_TIMEOUT_SECONDS: "7200"
           PACKAGE_NAME: ${{ inputs.package-name }}
-          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}
         run: |
           set -euo pipefail
           make package \
