@@ -115,6 +115,24 @@ func TestPublisherRunnersCannotBeCallerControlled(t *testing.T) {
 	}
 }
 
+func TestNativeBuildTimeoutIsBoundedCallerInput(t *testing.T) {
+	workflow := workflowSource(t)
+	inputs := stepBlock(t, workflow, "    inputs:\n", "    secrets:\n")
+	buildHeader := stepBlock(t, workflow, "jobs:\n  build:\n", "    outputs:\n")
+	validation := stepBlock(t, workflow, "      - name: validate input\n", "      - uses: actions/checkout@")
+
+	for _, required := range []string{
+		"build-timeout-minutes:\n",
+		"type: number",
+		"default: 30",
+	} {
+		requireContains(t, inputs, required)
+	}
+	requireContains(t, buildHeader, "timeout-minutes: ${{ inputs.build-timeout-minutes }}")
+	requireContains(t, validation, "BUILD_TIMEOUT_MINUTES: ${{ inputs.build-timeout-minutes }}")
+	requireContains(t, validation, "BUILD_TIMEOUT_MINUTES < 5 || BUILD_TIMEOUT_MINUTES > 120")
+}
+
 func TestDefaultImageNameReceivesCanonicalValidation(t *testing.T) {
 	workflow := workflowSource(t)
 	validation := stepBlock(t, workflow, "      - name: validate input\n", "      - uses: actions/checkout@")
