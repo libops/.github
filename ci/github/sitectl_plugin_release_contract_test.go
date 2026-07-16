@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -14,274 +13,358 @@ func pluginReleaseWorkflow(t *testing.T) string {
 	return githubReadFile(t, ".github/workflows/sitectl-plugin-goreleaser.yaml")
 }
 
-func TestHomebrewRecoveryUsesTaggedSourceAndExactCallerConfig(t *testing.T) {
-	workflow := pluginReleaseWorkflow(t)
-	source := stepBlock(t, workflow, "      - name: Checkout\n", "      - name: Checkout trusted recovery configuration\n")
-	config := stepBlock(t, workflow, "      - name: Checkout trusted recovery configuration\n", "      - name: Stage trusted recovery configuration\n")
-	stage := stepBlock(t, workflow, "      - name: Stage trusted recovery configuration\n", "      - name: Checkout sitectl SDK\n")
-	release := stepBlock(t, workflow, "      - name: Run GoReleaser\n", "      - name: Verify Homebrew publication\n")
-
-	requireContains(t, source, "ref: ${{ inputs.release-version || github.ref }}")
-	for _, required := range []string{
-		"if: ${{ inputs.release-mode == 'homebrew-only' }}",
-		"ref: ${{ github.sha }}",
-		"path: .libops-release-config",
-		"persist-credentials: false",
-	} {
-		requireContains(t, config, required)
-	}
-	for _, required := range []string{
-		"CALLER_SHA: ${{ github.sha }}",
-		`git -C "$config_checkout" rev-parse HEAD`,
-		`[[ "$actual_sha" != "$CALLER_SHA" ]]`,
-		`[[ ! -f "$source_config" || -L "$source_config" ]]`,
-		"release.disable",
-		"GORELEASER_DISABLE_SCM_RELEASE",
-		`cp -- "$source_config" "$recovery_config"`,
-		`rm -rf -- "$config_checkout"`,
-	} {
-		requireContains(t, stage, required)
-	}
-	requireContains(t, stage, `$0 ~ /^  disable:`)
-	if strings.Contains(stage, `$0 ~ /^[[:space:]]+disable:`) {
-		t.Error("release.disable recovery guard must require canonical direct indentation")
-	}
-	requireContains(t, release, "inputs.release-mode == 'homebrew-only' && format('--config {0}/libops-goreleaser-recovery.yaml', runner.temp)")
-	requireContains(t, release, "GORELEASER_DISABLE_SCM_RELEASE: ${{ inputs.release-mode == 'homebrew-only' }}")
+func releaseJob(t *testing.T) string {
+	t.Helper()
+	return stepBlock(t, pluginReleaseWorkflow(t), "  release:\n", "  homebrew:\n")
 }
 
-func validationStep(t *testing.T, name string) string {
+func validationJob(t *testing.T) string {
+	t.Helper()
+	return stepBlock(t, pluginReleaseWorkflow(t), "  validate:\n", "  release:\n")
+}
+
+func homebrewJob(t *testing.T) string {
+	t.Helper()
+	return stepBlock(t, pluginReleaseWorkflow(t), "  homebrew:\n", "  publish-linux-packages:\n")
+}
+
+func packageJob(t *testing.T) string {
 	t.Helper()
 	workflow := pluginReleaseWorkflow(t)
-	return stepBlock(t, workflow, "      - name: "+name+"\n", "      - name: Checkout\n")
+	start := strings.Index(workflow, "  publish-linux-packages:\n")
+	if start == -1 {
+		t.Fatal("workflow has no publish-linux-packages job")
+	}
+	return workflow[start:]
 }
 
-func TestRecoveryModesRequireAuthoritativeDefaultBranch(t *testing.T) {
-	releaseValidation := validationStep(t, "Validate release mode")
-	packageValidation := validationStep(t, "Validate package publication")
-	for name, validation := range map[string]string{
-		"homebrew": releaseValidation,
-		"packages": packageValidation,
+func TestReleaseAndRecoveryShareAuthoritativePostReleaseReconciliation(t *testing.T) {
+	release := releaseJob(t)
+	homebrew := homebrewJob(t)
+
+	for _, required := range []string{
+		"needs: validate",
+		"if: ${{ inputs.release-mode == 'full' }}",
+		"args: ${{ inputs.goreleaser-args }} --skip=homebrew",
+		"GITHUB_TOKEN: ${{ github.token }}",
+	} {
+		requireContains(t, release, required)
+	}
+	if strings.Contains(release, "HOMEBREW_REPO") || strings.Contains(release, "HOMEBREW_TOKEN") {
+		t.Error("release builder must not receive the Homebrew repository credential")
+	}
+
+	for _, required := range []string{
+		"needs: [validate, release]",
+		"needs.validate.result == 'success'",
+		"inputs.release-mode != 'packages-only'",
+		"inputs.release-mode == 'homebrew-only' && needs.release.result == 'skipped'",
+		"repository: ${{ job.workflow_repository }}",
+		"ref: ${{ job.workflow_sha }}",
+		"persist-credentials: false",
+		`go-version: "1.26.5"`,
+		"cache: false",
+		"go run .libops-workflow/ci/github/homebrew-reconcile/main.go",
+		"GH_TOKEN: ${{ github.token }}",
+		"HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_REPO }}",
+	} {
+		requireContains(t, homebrew, required)
+	}
+	for _, forbidden := range []string{
+		"goreleaser/goreleaser-action",
+		".goreleaser.yaml",
+		"Checkout release source",
+		"inputs.release-version || github.ref }}",
+		"git clone --depth=1 --branch",
+	} {
+		if strings.Contains(homebrew, forbidden) {
+			t.Errorf("Homebrew recovery must not contain caller build behavior %q", forbidden)
+		}
+	}
+}
+
+func TestRecoveryResolvesExactReusableWorkflowSource(t *testing.T) {
+	homebrew := homebrewJob(t)
+	checkout := stepBlock(
+		t,
+		homebrew,
+		"      - name: Checkout exact shared reconciliation source\n",
+		"      - name: Verify shared reconciliation source\n",
+	)
+	verify := stepBlock(
+		t,
+		homebrew,
+		"      - name: Verify shared reconciliation source\n",
+		"      - name: Set up Go\n",
+	)
+	for _, required := range []string{
+		"repository: ${{ job.workflow_repository }}",
+		"ref: ${{ job.workflow_sha }}",
+		"persist-credentials: false",
+	} {
+		requireContains(t, checkout, required)
+	}
+	for _, required := range []string{
+		"EXPECTED_SHA: ${{ job.workflow_sha }}",
+		`git -C .libops-workflow rev-parse HEAD`,
+		`[[ "$actual_sha" != "$EXPECTED_SHA" ]]`,
+	} {
+		requireContains(t, verify, required)
+	}
+	if strings.Contains(homebrew, "${{ github.sha }}") || strings.Contains(homebrew, "${{ github.workflow_sha }}") {
+		t.Error("reconciliation source must use the called workflow commit, not the caller commit")
+	}
+}
+
+func TestReleaseJobsUseLeastPrivilege(t *testing.T) {
+	workflow := pluginReleaseWorkflow(t)
+	requireContains(t, workflow, "\npermissions: {}\n")
+
+	releasePermissions := stepBlock(t, releaseJob(t), "    permissions:\n", "    steps:\n")
+	requireContains(t, releasePermissions, "      contents: write")
+	if strings.Contains(releasePermissions, "id-token") || strings.Contains(releasePermissions, "pull-requests") {
+		t.Errorf("release job has unrelated permissions:\n%s", releasePermissions)
+	}
+
+	homebrewPermissions := stepBlock(t, homebrewJob(t), "    permissions:\n", "    steps:\n")
+	requireContains(t, homebrewPermissions, "      contents: read")
+	if strings.Contains(homebrewPermissions, "id-token") || strings.Contains(homebrewPermissions, "contents: write") {
+		t.Errorf("Homebrew job has unrelated automatic-token permissions:\n%s", homebrewPermissions)
+	}
+
+	packagePermissions := stepBlock(t, packageJob(t), "    permissions:\n", "    steps:\n")
+	requireContains(t, packagePermissions, "      contents: read")
+	requireContains(t, packagePermissions, "      id-token: write")
+	if strings.Contains(packagePermissions, "contents: write") || strings.Contains(packagePermissions, "pull-requests") {
+		t.Errorf("package job has unrelated permissions:\n%s", packagePermissions)
+	}
+}
+
+func TestPackagesWaitForFullHomebrewReconciliation(t *testing.T) {
+	packages := packageJob(t)
+	for _, required := range []string{
+		"needs: [validate, release, homebrew]",
+		"needs.validate.result == 'success'",
+		"inputs.release-mode == 'full'",
+		"needs.release.result == 'success'",
+		"needs.homebrew.result == 'success'",
+		"inputs.release-mode == 'packages-only'",
+		"needs.release.result == 'skipped'",
+		"needs.homebrew.result == 'skipped'",
+	} {
+		requireContains(t, packages, required)
+	}
+}
+
+func TestPostAuthenticationPackageShellUsesValidatedEnvironment(t *testing.T) {
+	packages := packageJob(t)
+	start := strings.Index(packages, "      - name: Publish Linux package repository\n")
+	if start == -1 {
+		t.Fatal("package job has no publication step")
+	}
+	publish := packages[start:]
+	for _, required := range []string{
+		"PACKAGE_NAME: ${{ inputs.package-name }}",
+		"RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}",
+		`PACKAGE_NAME="${PACKAGE_NAME}"`,
+		`RELEASE_VERSION="${RELEASE_VERSION}"`,
+	} {
+		requireContains(t, publish, required)
+	}
+	run := workflowRunScript(t, publish)
+	if strings.Contains(run, "${{ inputs.package-name }}") || strings.Contains(run, "${{ inputs.release-version") {
+		t.Error("post-authentication package shell interpolates caller input directly")
+	}
+}
+
+func TestReleaseRequestValidationIsCredentialFreeAndExecutable(t *testing.T) {
+	validation := validationJob(t)
+	permissions := stepBlock(t, validation, "    permissions: {}\n", "    steps:\n")
+	requireContains(t, permissions, "permissions: {}")
+	for _, forbidden := range []string{"github.token", "secrets.", "GH_TOKEN", "id-token", "contents:"} {
+		if strings.Contains(validation, forbidden) {
+			t.Errorf("validation job contains credential-bearing behavior %q", forbidden)
+		}
+	}
+	step := stepBlock(
+		t,
+		pluginReleaseWorkflow(t),
+		"      - name: Validate release request\n",
+		"  release:\n",
+	)
+	script := filepath.Join(t.TempDir(), "validate-request.sh")
+	if err := os.WriteFile(script, []byte(workflowRunScript(t, step)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	run := func(mode, packageName, repository, publishPackages string) (string, error) {
+		command := exec.Command("bash", script) // #nosec G204 -- fixed workflow script.
+		command.Env = append(os.Environ(),
+			"GITHUB_REPOSITORY="+repository,
+			"PACKAGE_NAME="+packageName,
+			"PUBLISH_PACKAGE_REPO="+publishPackages,
+			"RELEASE_MODE="+mode,
+		)
+		output, err := command.CombinedOutput()
+		return string(output), err
+	}
+	for _, mode := range []string{"full", "homebrew-only", "packages-only"} {
+		if output, err := run(mode, "sitectl-ojs", "libops/sitectl-ojs", "true"); err != nil {
+			t.Fatalf("valid %s request failed: %v\n%s", mode, err, output)
+		}
+	}
+	for name, test := range map[string][4]string{
+		"unknown mode":        {"other", "sitectl-ojs", "libops/sitectl-ojs", "true"},
+		"invalid package":     {"full", "Sitectl-OJS", "libops/Sitectl-OJS", "true"},
+		"repeated hyphen":     {"full", "sitectl-ojs--test", "libops/sitectl-ojs--test", "true"},
+		"trailing hyphen":     {"full", "sitectl-ojs-", "libops/sitectl-ojs-", "true"},
+		"repository mismatch": {"full", "sitectl-ojs", "libops/sitectl-drupal", "true"},
+		"external owner":      {"full", "sitectl-ojs", "someone/sitectl-ojs", "true"},
+		"disabled no-op":      {"packages-only", "sitectl-ojs", "libops/sitectl-ojs", "false"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, required := range []string{
-				"REF_NAME: ${{ github.ref_name }}",
-				`default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"`,
-				`[[ "$REF_TYPE" != "branch" || "$REF_NAME" != "$default_branch" ]]`,
-			} {
-				requireContains(t, validation, required)
+			if output, err := run(test[0], test[1], test[2], test[3]); err == nil {
+				t.Fatalf("invalid request passed:\n%s", output)
 			}
 		})
 	}
-	requireContains(t, releaseValidation, "            homebrew-only)\n              require_default_branch\n")
-	requireContains(t, packageValidation, "            packages-only)\n              require_default_branch\n")
-
-	fullRelease := stepBlock(t, releaseValidation, "            full)\n", "            homebrew-only)\n")
-	fullPackages := stepBlock(t, packageValidation, "            full)\n", "            packages-only)\n")
-	if strings.Contains(fullRelease, "require_default_branch") || strings.Contains(fullPackages, "require_default_branch") {
-		t.Error("full tag releases must not be subject to the recovery-only default branch gate")
-	}
-
-	actionlint := githubReadFile(t, ".github/workflows/actionlint.yaml")
-	if count := strings.Count(actionlint, `      - "ci/github/**"`); count != 2 {
-		t.Errorf("actionlint path filters contain ci/github/** %d times, want pull_request and push", count)
-	}
 }
 
-type validationResult struct {
-	output string
-	log    string
-	err    error
+func TestRecoveryCredentialAndConcurrencyContract(t *testing.T) {
+	workflow := pluginReleaseWorkflow(t)
+	secrets := stepBlock(t, workflow, "    secrets:\n", "\npermissions: {}\n")
+	for _, required := range []string{
+		"      HOMEBREW_REPO:",
+		"required: true",
+		"contents and pull-request access to libops/homebrew",
+	} {
+		requireContains(t, secrets, required)
+	}
+	requireContains(
+		t,
+		workflow,
+		"group: sitectl-plugin-release-${{ github.repository }}-${{ inputs.release-version || github.ref_name }}",
+	)
 }
 
-func runReleaseValidation(t *testing.T, stepName, mode, refType, refName, version, defaultBranch string, releaseMissing bool) validationResult {
-	t.Helper()
-	validation := validationStep(t, stepName)
-	tempDir := t.TempDir()
-	script := filepath.Join(tempDir, "validate-release.sh")
-	if err := os.WriteFile(script, []byte(workflowRunScript(t, validation)), 0700); err != nil {
+func TestFullReleaseValidationIsExecutable(t *testing.T) {
+	step := stepBlock(
+		t,
+		releaseJob(t),
+		"      - name: Validate full release\n",
+		"      - name: Checkout release source\n",
+	)
+	script := filepath.Join(t.TempDir(), "validate-full.sh")
+	if err := os.WriteFile(script, []byte(workflowRunScript(t, step)), 0700); err != nil {
 		t.Fatal(err)
 	}
-	fakeBin := filepath.Join(tempDir, "bin")
+	fakeBin := filepath.Join(t.TempDir(), "bin")
 	if err := os.Mkdir(fakeBin, 0700); err != nil {
 		t.Fatal(err)
 	}
-	ghLog := filepath.Join(tempDir, "gh.log")
 	fakeGH := `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "$GH_LOG"
+if [[ "${RELEASE_EXISTS:-false}" == "true" ]]; then exit 0; fi
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(fakeGH), 0700); err != nil {
+		t.Fatal(err)
+	}
+	run := func(refType, refName, version, exists string) (string, error) {
+		command := exec.Command("bash", script) // #nosec G204 -- fixed workflow script.
+		command.Env = append(os.Environ(),
+			"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_TOKEN=test",
+			"GITHUB_REF_NAME="+refName,
+			"GITHUB_REPOSITORY=libops/sitectl-ojs",
+			"REF_TYPE="+refType,
+			"RELEASE_EXISTS="+exists,
+			"RELEASE_VERSION="+version,
+		)
+		output, err := command.CombinedOutput()
+		return string(output), err
+	}
+	if output, err := run("tag", "v1.0.0", "", "false"); err != nil {
+		t.Fatalf("valid full release failed: %v\n%s", err, output)
+	}
+	for name, test := range map[string][4]string{
+		"branch":        {"branch", "v1.0.0", "", "false"},
+		"leading zero":  {"tag", "v01.0.0", "", "false"},
+		"version input": {"tag", "v1.0.0", "v1.0.0", "false"},
+		"existing":      {"tag", "v1.0.0", "", "true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			output, err := run(test[0], test[1], test[2], test[3])
+			if err == nil {
+				t.Fatalf("invalid full release passed:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestPackageRecoveryRequiresDefaultBranch(t *testing.T) {
+	step := stepBlock(
+		t,
+		packageJob(t),
+		"      - name: Validate package publication\n",
+		"      - name: Authenticate to Google Cloud\n",
+	)
+	script := filepath.Join(t.TempDir(), "validate-packages.sh")
+	if err := os.WriteFile(script, []byte(workflowRunScript(t, step)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := filepath.Join(t.TempDir(), "bin")
+	if err := os.Mkdir(fakeBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fakeGH := `#!/usr/bin/env bash
+set -euo pipefail
 case "${1:-}" in
-  api) printf '%s\n' "$DEFAULT_BRANCH" ;;
-  release)
-    if [[ "$RELEASE_MISSING" == "true" ]]; then exit 1; fi
-    printf 'false\n'
-    ;;
+  api) printf '%s\n' main ;;
+  release) printf '%s\n' false ;;
   *) exit 2 ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(fakeGH), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", script) // #nosec G204 -- fixed repository script with a test-owned gh fixture.
-	cmd.Env = append(os.Environ(),
-		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"DEFAULT_BRANCH="+defaultBranch,
-		"GH_LOG="+ghLog,
-		"GH_TOKEN=test-token",
-		"GITHUB_REF_NAME="+refName,
-		"GITHUB_REPOSITORY=libops/release-contract",
-		"REF_NAME="+refName,
-		"REF_TYPE="+refType,
-		"RELEASE_MISSING="+strconv.FormatBool(releaseMissing),
-		"RELEASE_MODE="+mode,
-		"RELEASE_VERSION="+version,
-	)
-	output, runErr := cmd.CombinedOutput()
-	log, readErr := os.ReadFile(ghLog)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
+	run := func(refType, refName string) (string, error) {
+		command := exec.Command("bash", script) // #nosec G204 -- fixed workflow script.
+		command.Env = append(os.Environ(),
+			"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_TOKEN=test",
+			"GITHUB_REPOSITORY=libops/sitectl-ojs",
+			"REF_NAME="+refName,
+			"REF_TYPE="+refType,
+			"RELEASE_MODE=packages-only",
+			"RELEASE_VERSION=v1.0.0",
+		)
+		output, err := command.CombinedOutput()
+		return string(output), err
 	}
-	return validationResult{output: string(output), log: string(log), err: runErr}
-}
-
-func TestRecoveryDefaultBranchGateBehavior(t *testing.T) {
-	tests := []struct {
-		name    string
-		step    string
-		mode    string
-		version string
-	}{
-		{name: "homebrew", step: "Validate release mode", mode: "homebrew-only", version: "v0.6.0"},
-		{name: "packages", step: "Validate package publication", mode: "packages-only", version: "v0.6.0"},
+	if output, err := run("branch", "main"); err != nil {
+		t.Fatalf("default-branch package recovery failed: %v\n%s", err, output)
 	}
-	for _, test := range tests {
-		t.Run(test.name+" default branch", func(t *testing.T) {
-			result := runReleaseValidation(t, test.step, test.mode, "branch", "trunk", test.version, "trunk", false)
-			if result.err != nil {
-				t.Fatalf("default branch recovery failed: %v\n%s", result.err, result.output)
-			}
-		})
-		t.Run(test.name+" feature branch", func(t *testing.T) {
-			result := runReleaseValidation(t, test.step, test.mode, "branch", "feature", test.version, "trunk", false)
-			if result.err == nil || !strings.Contains(result.output, "must run from the repository default branch (trunk)") {
-				t.Fatalf("feature branch recovery was accepted: %v\n%s", result.err, result.output)
-			}
-		})
-		t.Run(test.name+" tag named as default branch", func(t *testing.T) {
-			result := runReleaseValidation(t, test.step, test.mode, "tag", "trunk", test.version, "trunk", false)
-			if result.err == nil || !strings.Contains(result.output, "must run from the repository default branch (trunk)") {
-				t.Fatalf("tag recovery was accepted: %v\n%s", result.err, result.output)
-			}
-		})
-	}
-}
-
-func TestFullTagValidationDoesNotQueryDefaultBranch(t *testing.T) {
-	tests := []struct {
-		name           string
-		step           string
-		version        string
-		releaseMissing bool
-	}{
-		{name: "goreleaser", step: "Validate release mode", releaseMissing: true},
-		{name: "packages", step: "Validate package publication", version: "v0.6.0"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			result := runReleaseValidation(t, test.step, "full", "tag", "v0.6.0", test.version, "trunk", test.releaseMissing)
-			if result.err != nil {
-				t.Fatalf("full tag validation changed: %v\n%s", result.err, result.output)
-			}
-			if strings.Contains(result.log, "api ") {
-				t.Fatalf("full tag validation queried recovery branch metadata:\n%s", result.log)
-			}
-		})
-	}
-}
-
-func writeRecoveryConfig(t *testing.T, checkout, config string) string {
-	t.Helper()
-	if err := os.MkdirAll(checkout, 0700); err != nil {
-		t.Fatal(err)
-	}
-	commands := [][]string{
-		{"git", "init", "--quiet"},
-		{"git", "config", "user.name", "Release Contract"},
-		{"git", "config", "user.email", "release-contract@example.test"},
-	}
-	for _, command := range commands {
-		cmd := exec.Command(command[0], command[1:]...) // #nosec G204 -- fixed test commands.
-		cmd.Dir = checkout
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", strings.Join(command, " "), err, output)
+	for _, test := range [][2]string{{"branch", "feature"}, {"tag", "main"}} {
+		if output, err := run(test[0], test[1]); err == nil || !strings.Contains(output, "must run from the repository default branch") {
+			t.Fatalf("invalid package recovery was accepted: %v\n%s", err, output)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(checkout, ".goreleaser.yaml"), []byte(config), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, command := range [][]string{{"git", "add", ".goreleaser.yaml"}, {"git", "commit", "--quiet", "-m", "fixture"}} {
-		cmd := exec.Command(command[0], command[1:]...) // #nosec G204 -- fixed test commands.
-		cmd.Dir = checkout
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", strings.Join(command, " "), err, output)
-		}
-	}
-	cmd := exec.Command("git", "rev-parse", "HEAD") // #nosec G204 -- fixed test command.
-	cmd.Dir = checkout
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(output))
 }
 
-func runRecoveryConfigStage(t *testing.T, config string, mutateSHA bool) (string, error) {
-	t.Helper()
-	workflow := pluginReleaseWorkflow(t)
-	stage := stepBlock(t, workflow, "      - name: Stage trusted recovery configuration\n", "      - name: Checkout sitectl SDK\n")
-	script := filepath.Join(t.TempDir(), "stage-recovery-config.sh")
-	if err := os.WriteFile(script, []byte(workflowRunScript(t, stage)), 0700); err != nil {
-		t.Fatal(err)
+func TestActionlintRunsAllGoContracts(t *testing.T) {
+	actionlint := githubReadFile(t, ".github/workflows/actionlint.yaml")
+	if count := strings.Count(actionlint, `      - "ci/github/**"`); count != 2 {
+		t.Errorf("actionlint path filters contain ci/github/** %d times, want pull_request and push", count)
 	}
-	workspace := t.TempDir()
-	runnerTemp := t.TempDir()
-	checkout := filepath.Join(workspace, ".libops-release-config")
-	callerSHA := writeRecoveryConfig(t, checkout, config)
-	if mutateSHA {
-		callerSHA = strings.Repeat("0", 40)
+	if count := strings.Count(actionlint, `      - "go.mod"`); count != 2 {
+		t.Errorf("actionlint path filters contain go.mod %d times, want pull_request and push", count)
 	}
-	cmd := exec.Command("bash", script) // #nosec G204 -- fixed repository script over test-owned fixtures.
-	cmd.Dir = workspace
-	cmd.Env = append(os.Environ(), "CALLER_SHA="+callerSHA, "RUNNER_TEMP="+runnerTemp)
-	output, err := cmd.CombinedOutput()
-	recovered, readErr := os.ReadFile(filepath.Join(runnerTemp, "libops-goreleaser-recovery.yaml"))
-	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
+	if count := strings.Count(actionlint, `      - ".github/actionlint.yaml"`); count != 2 {
+		t.Errorf("actionlint path filters contain .github/actionlint.yaml %d times, want pull_request and push", count)
 	}
-	return string(output) + string(recovered), err
-}
-
-func TestRecoveryConfigStageAcceptsOnlyCompatibleExactCallerConfig(t *testing.T) {
-	const compatible = "version: 2\nrelease:\n  disable: \"{{ .Env.GORELEASER_DISABLE_SCM_RELEASE }}\"\nbuilds: []\n"
-	output, err := runRecoveryConfigStage(t, compatible, false)
-	if err != nil {
-		t.Fatalf("compatible exact config failed: %v\n%s", err, output)
-	}
-	if !strings.Contains(output, compatible) {
-		t.Fatalf("staged recovery config differs from caller config:\n%s", output)
-	}
-
-	const oldConfig = "version: 2\nbuilds: []\n"
-	if output, err = runRecoveryConfigStage(t, oldConfig, false); err == nil || !strings.Contains(output, "must bind release.disable") {
-		t.Fatalf("config without the recovery release guard was accepted: %v\n%s", err, output)
-	}
-
-	const nestedConfig = "version: 2\nrelease:\n  github:\n    disable: \"{{ .Env.GORELEASER_DISABLE_SCM_RELEASE }}\"\nbuilds: []\n"
-	if output, err = runRecoveryConfigStage(t, nestedConfig, false); err == nil || !strings.Contains(output, "must bind release.disable") {
-		t.Fatalf("nested release disable field was accepted: %v\n%s", err, output)
-	}
-
-	if output, err = runRecoveryConfigStage(t, compatible, true); err == nil || !strings.Contains(output, "does not match caller SHA") {
-		t.Fatalf("config from a different commit was accepted: %v\n%s", err, output)
-	}
+	actionlintConfig := githubReadFile(t, ".github/actionlint.yaml")
+	requireContains(t, actionlintConfig, `property "workflow_(repository|sha)" is not defined in object type`)
+	checkout := stepBlock(t, actionlint, "      - name: Checkout\n", "      - name: Set up Go\n")
+	requireContains(t, checkout, "persist-credentials: false")
+	requireContains(t, actionlint, "go test ./ci/github/...")
 }
