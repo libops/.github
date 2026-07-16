@@ -39,4 +39,4 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
       - name: Validate reusable workflow contracts
-        run: go test ./ci/github/build_push_contract_test.go ./ci/github/pr_status_contract_test.go ./ci/github/install_sitectl_contract_test.go ./ci/github/sitectl_smoke_contract_test.go
+        run: go test ./ci/github/build_push_contract_test.go ./ci/github/pr_status_contract_test.go ./ci/github/install_sitectl_contract_test.go ./ci/github/sitectl_smoke_contract_test.go ./ci/github/sitectl_plugin_release_contract_test.go
