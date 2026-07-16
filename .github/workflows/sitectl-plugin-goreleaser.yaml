@@ -32,183 +32,185 @@ on:
         required: false
         type: string
         default: "main"
+    secrets:
+      HOMEBREW_REPO:
+        description: Fine-grained token with contents and pull-request access to libops/homebrew
+        required: true
 
-permissions:
-  contents: write
-  id-token: write
+permissions: {}
 
 concurrency:
-  group: sitectl-plugin-release-${{ github.repository }}-${{ github.ref }}
+  group: sitectl-plugin-release-${{ github.repository }}-${{ inputs.release-version || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  goreleaser:
-    if: ${{ inputs.release-mode != 'packages-only' }}
+  validate:
     runs-on: ubuntu-24.04
+    permissions: {}
     steps:
-      - name: Validate release mode
+      - name: Validate release request
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          PUBLISH_PACKAGE_REPO: ${{ inputs.publish-package-repo }}
           RELEASE_MODE: ${{ inputs.release-mode }}
-          RELEASE_VERSION: ${{ inputs.release-version }}
         run: |
           set -euo pipefail
-          require_default_branch() {
-            local default_branch
-            default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"
-            if [[ "$REF_TYPE" != "branch" || "$REF_NAME" != "$default_branch" ]]; then
-              echo "${RELEASE_MODE} recovery must run from the repository default branch (${default_branch})" >&2
-              exit 1
-            fi
-          }
           case "$RELEASE_MODE" in
-            full)
-              if [[ "$REF_TYPE" != "tag" || -n "$RELEASE_VERSION" ]]; then
-                echo "full releases require a tag ref and no release-version input" >&2
-                exit 1
-              fi
-              if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-                echo "release $GITHUB_REF_NAME already exists; use a recovery mode" >&2
-                exit 1
-              fi
-              ;;
-            homebrew-only)
-              require_default_branch
-              if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "homebrew-only recovery requires release-version in vMAJOR.MINOR.PATCH form" >&2
-                exit 1
-              fi
-              gh release view "$RELEASE_VERSION" \
-                --repo "$GITHUB_REPOSITORY" \
-                --json isDraft \
-                --jq 'select(.isDraft == false) | .isDraft' \
-                | grep -Fxq false
-              ;;
+            full|homebrew-only|packages-only) ;;
             *)
               echo "release-mode must be full, homebrew-only, or packages-only" >&2
               exit 1
               ;;
           esac
+          if [[ ! "$PACKAGE_NAME" =~ ^sitectl(-[a-z0-9]+)*$ || "$GITHUB_REPOSITORY" != "libops/$PACKAGE_NAME" ]]; then
+            echo "package-name must be a canonical sitectl name matching its libops source repository" >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_MODE" == "packages-only" && "$PUBLISH_PACKAGE_REPO" != "true" ]]; then
+            echo "packages-only recovery requires publish-package-repo=true" >&2
+            exit 1
+          fi
 
-      - name: Checkout
+  release:
+    needs: validate
+    if: ${{ inputs.release-mode == 'full' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Validate full release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" != "tag" || -n "$RELEASE_VERSION" || ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "full releases require a vMAJOR.MINOR.PATCH tag ref and no release-version input" >&2
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; use a recovery mode" >&2
+            exit 1
+          fi
+
+      - name: Checkout release source
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           fetch-depth: 0
-          ref: ${{ inputs.release-version || github.ref }}
-
-      # Keep recovery source immutable at the released tag while taking
-      # publication policy from the exact, current caller commit.
-      - name: Checkout trusted recovery configuration
-        if: ${{ inputs.release-mode == 'homebrew-only' }}
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-        with:
-          fetch-depth: 1
-          ref: ${{ github.sha }}
-          path: .libops-release-config
           persist-credentials: false
-
-      - name: Stage trusted recovery configuration
-        if: ${{ inputs.release-mode == 'homebrew-only' }}
-        shell: bash
-        env:
-          CALLER_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          readonly config_checkout=".libops-release-config"
-          readonly source_config="${config_checkout}/.goreleaser.yaml"
-          readonly recovery_config="${RUNNER_TEMP}/libops-goreleaser-recovery.yaml"
-
-          actual_sha="$(git -C "$config_checkout" rev-parse HEAD)"
-          if [[ "$actual_sha" != "$CALLER_SHA" ]]; then
-            echo "recovery configuration checkout does not match caller SHA" >&2
-            exit 1
-          fi
-          if [[ ! -f "$source_config" || -L "$source_config" ]]; then
-            echo "caller SHA must contain a regular .goreleaser.yaml file" >&2
-            exit 1
-          fi
-          if ! awk '
-            /^[^[:space:]#]/ {
-              in_release = ($0 ~ /^release:[[:space:]]*(#.*)?$/)
-            }
-            in_release &&
-              $0 ~ /^  disable:[[:space:]]*"\{\{[[:space:]]*\.Env\.GORELEASER_DISABLE_SCM_RELEASE[[:space:]]*\}\}"[[:space:]]*(#.*)?$/ {
-              found = 1
-            }
-            END { exit(found ? 0 : 1) }
-          ' "$source_config"; then
-            echo "trusted recovery configuration must bind release.disable to GORELEASER_DISABLE_SCM_RELEASE" >&2
-            exit 1
-          fi
-
-          cp -- "$source_config" "$recovery_config"
-          rm -rf -- "$config_checkout"
 
       - name: Checkout sitectl SDK
         if: ${{ hashFiles('go.work') != '' }}
         shell: bash
+        env:
+          SITECTL_REF: ${{ inputs.sitectl-ref }}
         run: |
           set -euo pipefail
-          git clone --depth=1 --branch "${{ inputs.sitectl-ref }}" https://github.com/libops/sitectl ../sitectl
+          git clone --depth=1 --branch "$SITECTL_REF" https://github.com/libops/sitectl ../sitectl
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version: ${{ inputs.go-version }}
 
-      - name: Run GoReleaser
+      - name: Publish release assets
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
-          # This binary receives two separately scoped tokens. Review and
-          # advance the exact release deliberately instead of executing latest.
+          # This binary receives only the caller repository token. Homebrew is
+          # reconciled from the resulting published release assets in a
+          # separately privileged job.
           version: v2.17.0
-          args: ${{ inputs.goreleaser-args }} ${{ inputs.release-mode == 'homebrew-only' && format('--config {0}/libops-goreleaser-recovery.yaml', runner.temp) || '' }}
+          args: ${{ inputs.goreleaser-args }} --skip=homebrew
         env:
-          GORELEASER_DISABLE_SCM_RELEASE: ${{ inputs.release-mode == 'homebrew-only' }}
+          GORELEASER_DISABLE_SCM_RELEASE: "false"
           GITHUB_TOKEN: ${{ github.token }}
-          HOMEBREW_REPO_TOKEN: ${{ secrets.HOMEBREW_REPO }}
 
-      - name: Verify Homebrew publication
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_REPO }}
-          PACKAGE_NAME: ${{ inputs.package-name }}
-          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
-        run: |
-          set -euo pipefail
-          version="${RELEASE_VERSION#v}"
-          formula="${PACKAGE_NAME}.rb"
-          if gh api \
-            -H "Accept: application/vnd.github.raw+json" \
-            "repos/libops/homebrew/contents/${formula}?ref=main" 2>/dev/null \
-            | grep -Fq "version \"${version}\""; then
-            exit 0
-          fi
-          branch="${PACKAGE_NAME}-${version}"
-          count="$(gh pr list \
-            --repo libops/homebrew \
-            --head "$branch" \
-            --state all \
-            --json state \
-            --jq 'map(select(.state == "OPEN" or .state == "MERGED")) | length')"
-          if [[ "$count" -lt 1 ]]; then
-            echo "Homebrew formula ${formula} is neither published nor represented by a valid PR" >&2
-            exit 1
-          fi
-
-  publish-linux-packages:
-    needs: goreleaser
+  homebrew:
+    needs: [validate, release]
     if: >-
       ${{
         always() &&
+        needs.validate.result == 'success' &&
+        inputs.release-mode != 'packages-only' &&
+        (needs.release.result == 'success' ||
+          (inputs.release-mode == 'homebrew-only' && needs.release.result == 'skipped'))
+      }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Validate Homebrew reconciliation mode
+        shell: bash
+        env:
+          RELEASE_MODE: ${{ inputs.release-mode }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_MODE" in
+            full|homebrew-only) ;;
+            *)
+              echo "Homebrew reconciliation mode must be full or homebrew-only" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout exact shared reconciliation source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .libops-workflow
+          persist-credentials: false
+
+      - name: Verify shared reconciliation source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git -C .libops-workflow rev-parse HEAD)"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" ]]; then
+            echo "shared reconciliation checkout does not match the reusable workflow SHA" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version: "1.26.5"
+          cache: false
+
+      - name: Reconcile Homebrew from published assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_REPO }}
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_MODE: ${{ inputs.release-mode }}
+          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          go run .libops-workflow/ci/github/homebrew-reconcile/main.go
+
+  publish-linux-packages:
+    needs: [validate, release, homebrew]
+    if: >-
+      ${{
+        always() &&
+        needs.validate.result == 'success' &&
         inputs.publish-package-repo &&
         inputs.release-mode != 'homebrew-only' &&
-        (needs.goreleaser.result == 'success' ||
-          (inputs.release-mode == 'packages-only' && needs.goreleaser.result == 'skipped'))
+        ((inputs.release-mode == 'full' &&
+          needs.release.result == 'success' &&
+          needs.homebrew.result == 'success') ||
+          (inputs.release-mode == 'packages-only' &&
+            needs.release.result == 'skipped' &&
+            needs.homebrew.result == 'skipped'))
       }}
     runs-on: ubuntu-24.04
     permissions:
@@ -235,14 +237,14 @@ jobs:
           }
           case "$RELEASE_MODE" in
             full)
-              if [[ "$REF_TYPE" != "tag" ]]; then
-                echo "full package publication requires a tag ref" >&2
+              if [[ "$REF_TYPE" != "tag" || ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                echo "full package publication requires a vMAJOR.MINOR.PATCH tag ref" >&2
                 exit 1
               fi
               ;;
             packages-only)
               require_default_branch
-              if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              if [[ ! "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
                 echo "packages-only recovery requires release-version in vMAJOR.MINOR.PATCH form" >&2
                 exit 1
               fi
@@ -254,12 +256,9 @@ jobs:
           esac
           gh release view "$RELEASE_VERSION" \
             --repo "$GITHUB_REPOSITORY" \
-            --json isDraft \
-            --jq 'select(.isDraft == false) | .isDraft' \
+            --json isDraft,isPrerelease \
+            --jq 'select(.isDraft == false and .isPrerelease == false) | .isDraft' \
             | grep -Fxq false
-
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
@@ -275,6 +274,7 @@ jobs:
           # This checkout runs with GCP publication credentials; keep it immutable.
           ref: 285183831e6e5c14ec34d87e208629949f5b627c # main
           path: .libops-packages
+          persist-credentials: false
 
       - name: Publish Linux package repository
         shell: bash
@@ -287,12 +287,14 @@ jobs:
           APTLY_GPG_PRIVATE_KEY_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PRIVATE_KEY_SECRET }}
           APTLY_GPG_PASSPHRASE_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET }}
           LOCK_TIMEOUT_SECONDS: "7200"
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          RELEASE_VERSION: ${{ inputs.release-version || github.ref_name }}
         run: |
           set -euo pipefail
           make package \
             GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
-            PACKAGE_NAME="${{ inputs.package-name }}" \
+            PACKAGE_NAME="${PACKAGE_NAME}" \
             GCS_BUCKET_PREFIX="sitectl" \
             APTLY_LABEL="sitectl" \
             APTLY_PUBLIC_KEY_NAME="sitectl-archive-keyring" \
-            RELEASE_VERSION="${{ inputs.release-version || github.ref_name }}"
+            RELEASE_VERSION="${RELEASE_VERSION}"

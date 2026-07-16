@@ -2,6 +2,58 @@
 
 This repository owns the reusable delivery workflows used by LibOps repositories. Callers must pin reusable workflows to a full commit SHA so a reviewed workflow—not a movable branch or tag—defines every privileged publication.
 
+## sitectl releases
+
+`.github/workflows/sitectl-plugin-goreleaser.yaml` separates a sitectl release
+into three privilege domains:
+
+- `release` builds the caller's tagged source and publishes the GitHub release.
+  GoReleaser is explicitly prevented from publishing Homebrew content and
+  receives only the caller repository token.
+- `homebrew` checks out this repository at the exact commit that defined the
+  reusable job. It does not check out or execute caller or tagged source. The
+  reconciler resolves the published tag to its source commit, downloads
+  `checksums.txt` and the four Darwin/Linux amd64/arm64 archives by release
+  asset ID, validates their checksums and tar structure, and creates or repairs
+  an exact one-formula pull request in `libops/homebrew`.
+- `publish-linux-packages` receives the GCP identity permission. A full release
+  cannot publish packages until Homebrew reconciliation succeeds.
+
+`full` runs all three stages from a new `vMAJOR.MINOR.PATCH` tag.
+`homebrew-only` reruns the same post-release reconciler for an existing stable
+release and is accepted only from the source repository's default branch.
+`packages-only` republishes an existing stable release to the Linux package
+repository and is subject to the same default-branch gate.
+
+The Homebrew reconciler treats the GitHub release as the artifact authority. It
+rejects missing or duplicate assets, malformed checksums, unsafe archive paths
+or link entries, duplicate members, and an empty or non-executable package
+binary. It refuses formula downgrades. A stale release branch is rebuilt from
+current Homebrew `main` and pushed with an explicit force-with-lease; only an
+open pull request whose head and base both belong to `libops/homebrew` and whose
+diff contains exactly the expected formula is accepted. Existing valid
+description, license, and dependency metadata is preserved. Trusted canonical
+metadata fills the fields missing from older formulas, including
+`sitectl-app-tmpl` and `sitectl-libops`, so the reconciled formula satisfies the
+tap's current validation contract.
+
+Callers must pass `HOMEBREW_REPO` as a fine-grained token limited to the
+contents and pull-request operations needed in `libops/homebrew`. Continue to
+pin this reusable workflow to a full commit SHA:
+
+```yaml
+jobs:
+  release:
+    uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    permissions:
+      contents: write
+      id-token: write
+    secrets:
+      HOMEBREW_REPO: ${{ secrets.HOMEBREW_REPO }}
+    with:
+      package-name: sitectl-example
+```
+
 ## sitectl create smoke tests
 
 `.github/workflows/sitectl-create-smoke-test.yaml` exercises a template with the
