@@ -374,21 +374,65 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout exact package publisher
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          repository: libops/terraform-linux-packages
+          ref: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f # main
+          path: .libops-packages
+          persist-credentials: false
+
+      - name: Verify exact package publisher
+        shell: bash
+        working-directory: .libops-packages
+        env:
+          PACKAGE_PUBLISHER_SHA: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f
+        run: |
+          set -euo pipefail
+          if [[ ! "$PACKAGE_PUBLISHER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "package publisher SHA must be an exact lowercase commit ID" >&2
+            exit 1
+          fi
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$PACKAGE_PUBLISHER_SHA" ]]; then
+            echo "package publisher checkout does not match the pinned commit" >&2
+            exit 1
+          fi
+
+      - name: Validate mandatory Linux package exclusions
+        shell: bash
+        working-directory: .libops-packages
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          EXCLUDED_PACKAGE_NAMES: ""
+        run: bash scripts/validate-package-exclusions.sh
+
+      - name: Build exact package tools image
+        id: package-tools
+        shell: bash
+        working-directory: .libops-packages
+        env:
+          PACKAGE_PUBLISHER_SHA: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f
+        run: |
+          set -euo pipefail
+          image="libops/terraform-linux-packages:publisher-${PACKAGE_PUBLISHER_SHA}"
+          docker build --tag "$image" .
+          image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+          if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "exact package-tools build did not produce a canonical image ID" >&2
+            exit 1
+          fi
+          {
+            echo "image=$image"
+            echo "image-id=$image_id"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.LIBOPS_PACKAGES_GCLOUD_OIDC_POOL }}
           service_account: ${{ vars.LIBOPS_PACKAGES_GSA }}
           create_credentials_file: true
-
-      - name: Checkout Package Publisher
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-        with:
-          repository: libops/terraform-linux-packages
-          # This checkout runs with GCP publication credentials; keep it immutable.
-          ref: 285183831e6e5c14ec34d87e208629949f5b627c # main
-          path: .libops-packages
-          persist-credentials: false
 
       - name: Publish Linux package repository
         shell: bash
@@ -400,15 +444,14 @@ jobs:
           APTLY_GPG_KEY_ID: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_KEY_ID }}
           APTLY_GPG_PRIVATE_KEY_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PRIVATE_KEY_SECRET }}
           APTLY_GPG_PASSPHRASE_SECRET: ${{ vars.LIBOPS_PACKAGES_APTLY_GPG_PASSPHRASE_SECRET }}
+          APTLY_LABEL: sitectl
+          APTLY_PUBLIC_KEY_NAME: sitectl-archive-keyring
+          EXCLUDED_PACKAGE_NAMES: ""
+          GCS_BUCKET_PREFIX: sitectl
           LOCK_TIMEOUT_SECONDS: "7200"
           PACKAGE_NAME: ${{ inputs.package-name }}
           RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}
-        run: |
-          set -euo pipefail
-          make package \
-            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
-            PACKAGE_NAME="${PACKAGE_NAME}" \
-            GCS_BUCKET_PREFIX="sitectl" \
-            APTLY_LABEL="sitectl" \
-            APTLY_PUBLIC_KEY_NAME="sitectl-archive-keyring" \
-            RELEASE_VERSION="${RELEASE_VERSION}"
+          PACKAGE_TOOLS_IMAGE: ${{ steps.package-tools.outputs.image }}
+          EXPECTED_PACKAGE_TOOLS_IMAGE_ID: ${{ steps.package-tools.outputs.image-id }}
+          PACKAGE_PUBLISHER_SHA: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f
+        run: bash scripts/publish-release-from-environment.sh

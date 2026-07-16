@@ -19,7 +19,13 @@ into three privilege domains:
   asset ID, validates their checksums and tar structure, and creates or repairs
   an exact one-formula pull request in `libops/homebrew`.
 - `publish-linux-packages` receives the GCP identity permission. A full release
-  cannot publish packages until Homebrew reconciliation succeeds.
+  cannot publish packages until Homebrew reconciliation succeeds. Before
+  requesting a cloud identity, it checks out the package publisher at an exact
+  reviewed commit, verifies that checkout, applies the publisher-mandatory
+  exclusions (including `sitectl-isle`), and builds a commit-named local tools
+  image. Plugin callers cannot add exclusions. Credentialed publication invokes
+  the publisher's validated environment wrapper directly and verifies the local
+  image ID instead of resolving a mutable image or passing inputs through Make.
 
 `full` runs all three stages either from a `vMAJOR.MINOR.PATCH` tag with no
 `release-version` input or from the source default branch with an exact
