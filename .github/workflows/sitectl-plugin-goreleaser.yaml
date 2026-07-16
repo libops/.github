@@ -148,9 +148,11 @@ jobs:
             echo "release ${version} must be an exact published, non-prerelease, mutable release with zero assets" >&2
             exit 1
           fi
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'default_branch=%s\n' "$default_branch" >> "$GITHUB_OUTPUT"
-          printf 'tag_commit=%s\n' "$tag_commit" >> "$GITHUB_OUTPUT"
+          {
+            printf 'version=%s\n' "$version"
+            printf 'default_branch=%s\n' "$default_branch"
+            printf 'tag_commit=%s\n' "$tag_commit"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout release source
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
