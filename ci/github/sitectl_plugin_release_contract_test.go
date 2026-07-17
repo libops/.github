@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const linuxPackagePublisherCommit = "fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f"
+const linuxPackagePublisherCommit = "b14fd2f95b4017e897c595b3321b9cc3f48b5ddd"
 
 func pluginReleaseWorkflow(t *testing.T) string {
 	t.Helper()
