@@ -378,7 +378,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           repository: libops/terraform-linux-packages
-          ref: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f # main
+          ref: b14fd2f95b4017e897c595b3321b9cc3f48b5ddd # main
           path: .libops-packages
           persist-credentials: false
 
@@ -386,7 +386,7 @@ jobs:
         shell: bash
         working-directory: .libops-packages
         env:
-          PACKAGE_PUBLISHER_SHA: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f
+          PACKAGE_PUBLISHER_SHA: b14fd2f95b4017e897c595b3321b9cc3f48b5ddd
         run: |
           set -euo pipefail
           if [[ ! "$PACKAGE_PUBLISHER_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -412,7 +412,7 @@ jobs:
         shell: bash
         working-directory: .libops-packages
         env:
-          PACKAGE_PUBLISHER_SHA: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f
+          PACKAGE_PUBLISHER_SHA: b14fd2f95b4017e897c595b3321b9cc3f48b5ddd
         run: |
           set -euo pipefail
           image="libops/terraform-linux-packages:publisher-${PACKAGE_PUBLISHER_SHA}"
@@ -453,5 +453,5 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}
           PACKAGE_TOOLS_IMAGE: ${{ steps.package-tools.outputs.image }}
           EXPECTED_PACKAGE_TOOLS_IMAGE_ID: ${{ steps.package-tools.outputs.image-id }}
-          PACKAGE_PUBLISHER_SHA: fcdfc5b1fe9eaa0bf80b82eec03870d240443e0f
+          PACKAGE_PUBLISHER_SHA: b14fd2f95b4017e897c595b3321b9cc3f48b5ddd
         run: bash scripts/publish-release-from-environment.sh
