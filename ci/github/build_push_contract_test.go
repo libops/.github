@@ -66,6 +66,21 @@ func workflowRunScript(t *testing.T, step string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n")) + "\n"
 }
 
+func workflowShellFunction(t *testing.T, step, name, following string) string {
+	t.Helper()
+	script := workflowRunScript(t, step)
+	startMarker := name + "() {\n"
+	start := strings.Index(script, startMarker)
+	if start == -1 {
+		t.Fatalf("workflow script is missing shell function %s", name)
+	}
+	end := strings.Index(script[start:], "\n"+following+"() {")
+	if end == -1 {
+		t.Fatalf("workflow script is missing %s after shell function %s", following, name)
+	}
+	return script[start : start+end]
+}
+
 func artifactKey(repository, image, tag, aliases, runID string) string {
 	value := strings.Join([]string{repository, image, tag, aliases, runID}, "\n") + "\n"
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))[:24]
@@ -150,7 +165,7 @@ func TestExpectedMainGuardsEveryRegistryWrite(t *testing.T) {
 	workflow := workflowSource(t)
 	push := stepBlock(t, workflow, "      - name: Push verified native image\n", "      - name: Preserve platform digests\n")
 	merge := stepBlock(t, workflow, "      - name: merge platform images\n", "      - name: Verify final manifest parity\n")
-	sign := workflow[strings.Index(workflow, "      - name: Sign and verify final manifests\n"):]
+	sign := stepBlock(t, workflow, "      - name: Sign and verify final manifests\n", "\n  cleanup:\n")
 
 	requireContains(t, push, "require_current_main\n            docker push \"$target\"")
 	guardedCreate := regexp.MustCompile(`require_current_main\s+docker buildx imagetools create`)
@@ -158,6 +173,123 @@ func TestExpectedMainGuardsEveryRegistryWrite(t *testing.T) {
 		t.Errorf("want the manifest helper to check current main immediately before its only registry write, got %d guarded writes", got)
 	}
 	requireContains(t, sign, "require_current_main\n            cosign sign --yes")
+}
+
+func TestExpectedMainLookupRetriesTransientResponsesAndFailsClosed(t *testing.T) {
+	workflow := workflowSource(t)
+	push := stepBlock(t, workflow, "      - name: Push verified native image\n", "      - name: Preserve platform digests\n")
+	merge := stepBlock(t, workflow, "      - name: merge platform images\n", "      - name: Verify final manifest parity\n")
+	sign := stepBlock(t, workflow, "      - name: Sign and verify final manifests\n", "\n  cleanup:\n")
+	pushGuard := workflowShellFunction(t, push, "require_current_main", "push_image")
+	mergeGuard := workflowShellFunction(t, merge, "require_current_main", "create_manifest")
+	signGuard := workflowShellFunction(t, sign, "require_current_main", "sign_and_verify")
+	if pushGuard != mergeGuard || pushGuard != signGuard {
+		t.Fatal("every publication phase must use the same main-tip guard")
+	}
+	for _, required := range []string{
+		"for attempt in 1 2 3 4; do",
+		`[[ "$current_main" =~ ^[0-9a-fA-F]{40}$ ]]`,
+		"if ((attempt == 4)); then",
+		`return 1`,
+		`sleep "$((1 << (attempt - 1)))"`,
+	} {
+		requireContains(t, pushGuard, required)
+	}
+
+	testDir := t.TempDir()
+	guardPath := filepath.Join(testDir, "main-guard.sh")
+	guardScript := "set -euo pipefail\n" + pushGuard + "\nrequire_current_main\n"
+	if err := os.WriteFile(guardPath, []byte(guardScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := filepath.Join(testDir, "bin")
+	if err := os.Mkdir(fakeBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	fakeGH := `#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [[ -f "$FAKE_GH_COUNT" ]]; then count="$(< "$FAKE_GH_COUNT")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$FAKE_GH_COUNT"
+case "$FAKE_GH_MODE" in
+  recover)
+    case "$count" in
+      1) printf '<html>transient proxy response</html>\n'; exit 1 ;;
+      2) printf 'not-a-sha\n' ;;
+      *) printf '%s\n' "$EXPECTED_MAIN_SHA" ;;
+    esac
+    ;;
+  mismatch) printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
+  exhausted) printf '<html>persistent proxy response</html>\n'; exit 1 ;;
+  *) exit 2 ;;
+esac
+`
+	fakeSleep := `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >> "$FAKE_SLEEP_LOG"
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(fakeGH), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, "sleep"), []byte(fakeSleep), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		attempts int
+		err      error
+		output   string
+		sleeps   string
+	}
+	run := func(mode, expected string) result {
+		t.Helper()
+		countPath := filepath.Join(testDir, "gh-count")
+		sleepPath := filepath.Join(testDir, "sleep-log")
+		for _, path := range []string{countPath, sleepPath} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.Command("bash", guardPath) // #nosec G204 -- fixed test-owned script.
+		cmd.Env = []string{
+			"PATH=" + fakeBin + string(os.PathListSeparator) + "/usr/bin:/bin",
+			"EXPECTED_MAIN_SHA=" + expected,
+			"GITHUB_REPOSITORY=libops/example",
+			"FAKE_GH_COUNT=" + countPath,
+			"FAKE_GH_MODE=" + mode,
+			"FAKE_SLEEP_LOG=" + sleepPath,
+		}
+		output, err := cmd.CombinedOutput()
+		value := result{err: err, output: string(output)}
+		if count, readErr := os.ReadFile(countPath); readErr == nil {
+			if _, scanErr := fmt.Sscanf(string(count), "%d", &value.attempts); scanErr != nil {
+				t.Fatal(scanErr)
+			}
+		} else if !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		if sleeps, readErr := os.ReadFile(sleepPath); readErr == nil {
+			value.sleeps = string(sleeps)
+		} else if !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		return value
+	}
+
+	const expected = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if got := run("recover", expected); got.err != nil || got.attempts != 3 || got.sleeps != "1\n2\n" {
+		t.Fatalf("transient recovery = attempts %d, sleeps %q, error %v, output %q", got.attempts, got.sleeps, got.err, got.output)
+	}
+	if got := run("exhausted", expected); got.err == nil || got.attempts != 4 || got.sleeps != "1\n2\n4\n" || !strings.Contains(got.output, "Unable to verify main after 4 GitHub API attempts") {
+		t.Fatalf("exhausted lookup = attempts %d, sleeps %q, error %v, output %q", got.attempts, got.sleeps, got.err, got.output)
+	}
+	if got := run("mismatch", expected); got.err == nil || got.attempts != 1 || got.sleeps != "" || !strings.Contains(got.output, "Main advanced to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") {
+		t.Fatalf("mismatch = attempts %d, sleeps %q, error %v, output %q", got.attempts, got.sleeps, got.err, got.output)
+	}
+	if got := run("recover", ""); got.err != nil || got.attempts != 0 {
+		t.Fatalf("unguarded compatibility mode = attempts %d, error %v, output %q", got.attempts, got.err, got.output)
+	}
 }
 
 func TestDigestArtifactsRepairMixedAttempts(t *testing.T) {

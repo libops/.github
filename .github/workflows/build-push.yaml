@@ -461,10 +461,31 @@ jobs:
             if [[ -z "$EXPECTED_MAIN_SHA" ]]; then
               return
             fi
-            current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+
+            local attempt
+            local current_main=""
+            for attempt in 1 2 3 4; do
+              if current_main="$(
+                gh api \
+                  --method GET \
+                  --header "Accept: application/vnd.github+json" \
+                  --header "X-GitHub-Api-Version: 2022-11-28" \
+                  "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                  --jq '.object.sha' 2>/dev/null
+              )" && [[ "$current_main" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                break
+              fi
+              current_main=""
+              if ((attempt == 4)); then
+                echo "Unable to verify main after 4 GitHub API attempts; refusing publication for $EXPECTED_MAIN_SHA" >&2
+                return 1
+              fi
+              echo "GitHub main lookup attempt $attempt/4 failed; retrying" >&2
+              sleep "$((1 << (attempt - 1)))"
+            done
             if [[ "${current_main,,}" != "${EXPECTED_MAIN_SHA,,}" ]]; then
-              echo "Main advanced to $current_main; refusing to publish $EXPECTED_MAIN_SHA" >&2
-              exit 1
+              echo "Main advanced to $current_main; refusing publication for $EXPECTED_MAIN_SHA" >&2
+              return 1
             fi
           }
           push_image() {
@@ -668,10 +689,31 @@ jobs:
             if [[ -z "$EXPECTED_MAIN_SHA" ]]; then
               return
             fi
-            current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+
+            local attempt
+            local current_main=""
+            for attempt in 1 2 3 4; do
+              if current_main="$(
+                gh api \
+                  --method GET \
+                  --header "Accept: application/vnd.github+json" \
+                  --header "X-GitHub-Api-Version: 2022-11-28" \
+                  "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                  --jq '.object.sha' 2>/dev/null
+              )" && [[ "$current_main" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                break
+              fi
+              current_main=""
+              if ((attempt == 4)); then
+                echo "Unable to verify main after 4 GitHub API attempts; refusing publication for $EXPECTED_MAIN_SHA" >&2
+                return 1
+              fi
+              echo "GitHub main lookup attempt $attempt/4 failed; retrying" >&2
+              sleep "$((1 << (attempt - 1)))"
+            done
             if [[ "${current_main,,}" != "${EXPECTED_MAIN_SHA,,}" ]]; then
-              echo "Main advanced to $current_main; refusing to publish $EXPECTED_MAIN_SHA" >&2
-              exit 1
+              echo "Main advanced to $current_main; refusing publication for $EXPECTED_MAIN_SHA" >&2
+              return 1
             fi
           }
           create_manifest() {
@@ -824,10 +866,31 @@ jobs:
             if [[ -z "$EXPECTED_MAIN_SHA" ]]; then
               return
             fi
-            current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+
+            local attempt
+            local current_main=""
+            for attempt in 1 2 3 4; do
+              if current_main="$(
+                gh api \
+                  --method GET \
+                  --header "Accept: application/vnd.github+json" \
+                  --header "X-GitHub-Api-Version: 2022-11-28" \
+                  "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                  --jq '.object.sha' 2>/dev/null
+              )" && [[ "$current_main" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                break
+              fi
+              current_main=""
+              if ((attempt == 4)); then
+                echo "Unable to verify main after 4 GitHub API attempts; refusing publication for $EXPECTED_MAIN_SHA" >&2
+                return 1
+              fi
+              echo "GitHub main lookup attempt $attempt/4 failed; retrying" >&2
+              sleep "$((1 << (attempt - 1)))"
+            done
             if [[ "${current_main,,}" != "${EXPECTED_MAIN_SHA,,}" ]]; then
-              echo "Main advanced to $current_main; refusing to sign $EXPECTED_MAIN_SHA" >&2
-              exit 1
+              echo "Main advanced to $current_main; refusing publication for $EXPECTED_MAIN_SHA" >&2
+              return 1
             fi
           }
           sign_and_verify() {
