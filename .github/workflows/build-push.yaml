@@ -1009,7 +1009,7 @@ jobs:
             *) primary_kind=unsupported ;;
           esac
           if [[ -n "$ADDITIONAL_GAR_REGISTRY" &&
-                ! "$ADDITIONAL_GAR_REGISTRY" =~ ^[A-Za-z0-9-]+-docker\\.pkg\\.dev/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+                ! "$ADDITIONAL_GAR_REGISTRY" =~ ^[A-Za-z0-9-]+-docker\.pkg\.dev/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
             echo "Cleanup additional registry must be a GAR Docker repository prefix" >&2
             exit 1
           fi

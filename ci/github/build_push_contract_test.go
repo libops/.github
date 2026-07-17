@@ -440,6 +440,40 @@ printf '%s' "${FAKE_CURL_STATUS:-200}"
 	}
 }
 
+func TestCleanupScopeAcceptsGARRepositoryPrefix(t *testing.T) {
+	workflow := workflowSource(t)
+	cleanup := workflow[strings.Index(workflow, "  cleanup:\n"):]
+	scope := stepBlock(t, cleanup, "      - name: Resolve successful publication cleanup scope\n", "      - name: Authenticate GAR for exact tag cleanup\n")
+	testDir := t.TempDir()
+	scriptPath := filepath.Join(testDir, "cleanup-scope.sh")
+	if err := os.WriteFile(scriptPath, []byte(workflowRunScript(t, scope)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(testDir, "github-output")
+	cmd := exec.Command("bash", scriptPath) // #nosec G204 -- fixed repository-owned script.
+	cmd.Env = append(os.Environ(),
+		"ADDITIONAL_GAR_REGISTRY=us-docker.pkg.dev/example-project/public",
+		"ADDITIONAL_IMAGE_NAMES=[]",
+		"DERIVED_TAG=main",
+		"GITHUB_OUTPUT="+outputPath,
+		"GITHUB_REPOSITORY=libops/example",
+		"GITHUB_RUN_ID=12345",
+		"PRIMARY_IMAGE=ghcr.io/libops/example",
+		"PRIMARY_REGISTRY=ghcr.io/libops",
+		"TAG_OVERRIDE=",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("valid GAR cleanup scope failed: %v\n%s", err, output)
+	}
+	outputs, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(outputs), "primary-kind=ghcr\n") {
+		t.Fatalf("cleanup scope outputs = %q, want primary-kind=ghcr", outputs)
+	}
+}
+
 func TestAliasesFanOutOneVerifiedBuild(t *testing.T) {
 	workflow := workflowSource(t)
 	inputs := stepBlock(t, workflow, "      additional-image-names:\n", "      scan:\n")
