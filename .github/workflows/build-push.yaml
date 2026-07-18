@@ -35,11 +35,6 @@ on:
         type: string
         default: ""
         description: "Additional non-secret, newline-separated Docker build arguments"
-      build-timeout-minutes:
-        required: false
-        type: number
-        default: 30
-        description: "Bounded timeout for each native image build; use 5 through 120 minutes"
       runners:
         required: false
         type: string
@@ -107,7 +102,7 @@ jobs:
           - ubuntu-24.04-arm
     name: build-${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ inputs.build-timeout-minutes }}
+    timeout-minutes: 30
     outputs:
       image-tag: ${{ steps.record-tag.outputs.tag }}
     steps:
@@ -117,7 +112,6 @@ jobs:
           ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
           ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           BUILD_CONTEXT: ${{ inputs.context }}
-          BUILD_TIMEOUT_MINUTES: ${{ inputs.build-timeout-minutes }}
           CALLER_REF: ${{ inputs.ref }}
           CERTIFICATE_IDENTITY: ${{ inputs.certificate-identity }}
           DOCKER_FILE: ${{ inputs.file }}
@@ -142,11 +136,6 @@ jobs:
           fi
           if ! jq -e '. == ["ubuntu-24.04", "ubuntu-24.04-arm"]' <<< "$RUNNERS" >/dev/null; then
             echo "The runners compatibility input must remain the fixed LibOps hosted-runner pair" >&2
-            exit 1
-          fi
-          if [[ ! "$BUILD_TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] ||
-            ((BUILD_TIMEOUT_MINUTES < 5 || BUILD_TIMEOUT_MINUTES > 120)); then
-            echo "Native build timeout must be an integer from 5 through 120 minutes" >&2
             exit 1
           fi
           validate_repo_path() {
