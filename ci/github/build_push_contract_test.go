@@ -148,53 +148,6 @@ func TestNativeBuildTimeoutIsBoundedCallerInput(t *testing.T) {
 	requireContains(t, validation, "BUILD_TIMEOUT_MINUTES < 5 || BUILD_TIMEOUT_MINUTES > 120")
 }
 
-func TestOptionalRunnerDiskReclamationIsExplicitAndScoped(t *testing.T) {
-	workflow := workflowSource(t)
-	inputs := stepBlock(t, workflow, "    inputs:\n", "    secrets:\n")
-	reclaim := stepBlock(t, workflow, "      - name: Reclaim hosted runner disk space\n", "      - uses: actions/checkout@")
-
-	for _, required := range []string{
-		"reclaim-runner-disk:\n",
-		"type: boolean",
-		"default: false",
-	} {
-		requireContains(t, inputs, required)
-	}
-	for _, required := range []string{
-		"if: inputs.reclaim-runner-disk",
-		"timeout-minutes: 10",
-		"set -euo pipefail",
-		"sudo apt-get remove -y",
-		"sudo apt-get autoremove -y",
-		"sudo apt-get clean",
-		"sudo docker image prune --all --force",
-		"/opt/hostedtoolcache",
-		"/usr/local/lib/android",
-		"/usr/local/lib/node_modules",
-		"/usr/share/dotnet",
-		"/usr/share/swift",
-		"ghcup nuke",
-		"df -h /",
-	} {
-		requireContains(t, reclaim, required)
-	}
-	if got := strings.Count(workflow, "if: inputs.reclaim-runner-disk"); got != 1 {
-		t.Fatalf("runner-disk reclamation guard appears %d times, want exactly one native-build guard", got)
-	}
-	if strings.Contains(reclaim, "uses:") {
-		t.Error("runner-disk reclamation must not delegate host deletion to a third-party action")
-	}
-	if strings.Contains(reclaim, "$AGENT_TOOLSDIRECTORY") {
-		t.Error("runner-disk reclamation paths must be a fixed allowlist")
-	}
-	validationIndex := strings.Index(workflow, "      - name: validate input\n")
-	reclaimIndex := strings.Index(workflow, "      - name: Reclaim hosted runner disk space\n")
-	checkoutIndex := strings.Index(workflow, "      - uses: actions/checkout@")
-	if validationIndex == -1 || reclaimIndex == -1 || checkoutIndex == -1 || !(validationIndex < reclaimIndex && reclaimIndex < checkoutIndex) {
-		t.Fatal("runner-disk reclamation must run after validation and before checkout")
-	}
-}
-
 func TestDefaultImageNameReceivesCanonicalValidation(t *testing.T) {
 	workflow := workflowSource(t)
 	validation := stepBlock(t, workflow, "      - name: validate input\n", "      - uses: actions/checkout@")

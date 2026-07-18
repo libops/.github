@@ -184,8 +184,6 @@ An always-run cleanup job retains all run-scoped staging tags when a build or me
 
 Builds always run on the fixed `ubuntu-24.04` and `ubuntu-24.04-arm` GitHub-hosted runners, and the merge always consumes the fixed `amd64` and `arm64` platforms. The deprecated `runners` input remains for caller compatibility, but only its default pair is accepted; it cannot select a self-hosted or arbitrary runner with publisher credentials.
 
-Set `reclaim-runner-disk: true` only for source builds whose compiler and BuildKit working sets exhaust the default hosted-runner disk. The opt-in step removes unused preinstalled SDKs and tool caches from each ephemeral runner before checkout; later setup actions must therefore install any required host tools again. It does not change the fixed runner pair, registry credentials, scan gate, or publication policy.
-
 ### Caller secrets
 
 The reusable workflow declares four optional secrets so callers can pass only what their registry needs. GHCR uses the caller's automatic `GITHUB_TOKEN` and needs none of these secrets. GAR callers explicitly map `GCLOUD_OIDC_POOL` and `GSA`; Docker Hub callers explicitly map `DOCKERHUB_USER` and `DOCKERHUB_PASSWORD`. Do not use `secrets: inherit`.
