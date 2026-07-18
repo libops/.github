@@ -40,6 +40,11 @@ on:
         type: number
         default: 30
         description: "Bounded timeout for each native image build; use 5 through 120 minutes"
+      reclaim-runner-disk:
+        required: false
+        type: boolean
+        default: false
+        description: "Remove unused preinstalled SDKs from each ephemeral hosted runner before an unusually large build"
       runners:
         required: false
         type: string
@@ -230,6 +235,51 @@ jobs:
               echo "has-aliases=false"
             fi
           } >> "$GITHUB_OUTPUT"
+
+      - name: Reclaim hosted runner disk space
+        if: inputs.reclaim-runner-disk
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo apt-get remove -y \
+            '^aspnetcore-.*' \
+            '^dotnet-.*' \
+            '^llvm-.*' \
+            'php.*' \
+            '^mongodb-.*' \
+            '^mysql-.*' \
+            azure-cli \
+            firefox \
+            google-chrome-stable \
+            google-cloud-cli \
+            google-cloud-sdk \
+            microsoft-edge-stable \
+            mono-devel \
+            powershell \
+            snapd \
+            --fix-missing 2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          sudo rm -rf \
+            /opt/google/chrome \
+            /opt/hostedtoolcache \
+            /opt/microsoft/msedge \
+            /opt/microsoft/powershell \
+            /opt/pipx \
+            /usr/lib/mono \
+            /usr/local/julia* \
+            /usr/local/lib/android \
+            /usr/local/lib/node_modules \
+            /usr/local/share/chromium \
+            /usr/local/share/powershell \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            2>/dev/null || true
+          ghcup nuke 2>/dev/null || true
+          df -h /
 
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
