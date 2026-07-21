@@ -136,7 +136,7 @@ jobs:
       GITHUB_ACTIONS: "true"
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ inputs.checkout-path }}
 
@@ -160,7 +160,7 @@ jobs:
 
       - name: Checkout local plugin source
         if: ${{ inputs.local-plugin-repository != '' }}
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ inputs.local-plugin-repository }}
           ref: ${{ inputs.local-plugin-ref }}
@@ -332,7 +332,7 @@ jobs:
 
       - name: Checkout sitectl source
         if: ${{ inputs.sitectl-repository != '' }}
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: ${{ inputs.sitectl-repository }}
           ref: ${{ inputs.sitectl-ref }}
@@ -341,7 +341,7 @@ jobs:
       - name: Install sitectl
         # Release this workflow only after advancing this SHA to the commit that
         # contains the package-versions contract in install-sitectl.
-        uses: libops/.github/.github/actions/install-sitectl@90a9272d0829c878a682ba636bc155c2b06c7939 # main
+        uses: libops/.github/.github/actions/install-sitectl@5f44a8c8d157bb7e5cf6d9e1c98847a604e87455 # main
         with:
           packages: ${{ steps.smoke.outputs.packages }}
           package-versions: ${{ inputs.package-versions }}
@@ -349,7 +349,7 @@ jobs:
 
       - name: Set up Go
         if: ${{ inputs.local-plugin-path != '' || inputs.sitectl-repository != '' }}
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ inputs.go-version }}
           cache-dependency-path: ${{ steps.smoke.outputs.go-cache-dependency-path }}
