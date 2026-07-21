@@ -19,7 +19,7 @@ on:
         type: boolean
         default: true
       release-mode:
-        description: Full release, Homebrew-only recovery, or package-only recovery
+        description: Full release or package-only recovery
         required: false
         type: string
         default: full
@@ -34,7 +34,7 @@ on:
         default: "65cfde137a58ba14aaa9a1512d88b943888872f3"
     secrets:
       HOMEBREW_REPO:
-        description: Fine-grained token with contents and pull-request access to libops/homebrew
+        description: Fine-grained token used by GoReleaser to publish to libops/homebrew
         required: true
 
 permissions: {}
@@ -57,9 +57,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$RELEASE_MODE" in
-            full|homebrew-only|packages-only) ;;
+            full|packages-only) ;;
             *)
-              echo "release-mode must be full, homebrew-only, or packages-only" >&2
+              echo "release-mode must be full or packages-only" >&2
               exit 1
               ;;
           esac
@@ -207,101 +207,28 @@ jobs:
         with:
           go-version: ${{ inputs.go-version }}
 
-      - name: Publish release assets
+      - name: Publish release assets and Homebrew formula
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
-          # This binary receives only the caller repository token. Homebrew is
-          # reconciled from the resulting published release assets in a
-          # separately privileged job.
           version: v2.17.0
-          args: ${{ inputs.goreleaser-args }} --skip=homebrew
+          args: ${{ inputs.goreleaser-args }}
         env:
           GORELEASER_DISABLE_SCM_RELEASE: "false"
           GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_REPO_TOKEN: ${{ secrets.HOMEBREW_REPO }}
 
-  homebrew:
+  publish-linux-packages:
     needs: [validate, release]
     if: >-
       ${{
         always() &&
         needs.validate.result == 'success' &&
-        inputs.release-mode != 'packages-only' &&
-        (needs.release.result == 'success' ||
-          (inputs.release-mode == 'homebrew-only' && needs.release.result == 'skipped'))
-      }}
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - name: Validate Homebrew reconciliation mode
-        shell: bash
-        env:
-          RELEASE_MODE: ${{ inputs.release-mode }}
-        run: |
-          set -euo pipefail
-          case "$RELEASE_MODE" in
-            full|homebrew-only) ;;
-            *)
-              echo "Homebrew reconciliation mode must be full or homebrew-only" >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Checkout exact shared reconciliation source
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .libops-workflow
-          persist-credentials: false
-
-      - name: Verify shared reconciliation source
-        shell: bash
-        env:
-          EXPECTED_SHA: ${{ job.workflow_sha }}
-        run: |
-          set -euo pipefail
-          actual_sha="$(git -C .libops-workflow rev-parse HEAD)"
-          if [[ "$actual_sha" != "$EXPECTED_SHA" ]]; then
-            echo "shared reconciliation checkout does not match the reusable workflow SHA" >&2
-            exit 1
-          fi
-
-      - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
-        with:
-          go-version: "1.26.5"
-          cache: false
-
-      - name: Reconcile Homebrew from published assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_REPO }}
-          PACKAGE_NAME: ${{ inputs.package-name }}
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          RELEASE_MODE: ${{ inputs.release-mode }}
-          RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}
-        run: |
-          set -euo pipefail
-          go run .libops-workflow/ci/github/homebrew-reconcile/main.go
-
-  publish-linux-packages:
-    needs: [validate, release, homebrew]
-    if: >-
-      ${{
-        always() &&
-        needs.validate.result == 'success' &&
         inputs.publish-package-repo &&
-        inputs.release-mode != 'homebrew-only' &&
         ((inputs.release-mode == 'full' &&
-          needs.release.result == 'success' &&
-          needs.homebrew.result == 'success') ||
+          needs.release.result == 'success') ||
           (inputs.release-mode == 'packages-only' &&
-            needs.release.result == 'skipped' &&
-            needs.homebrew.result == 'skipped'))
+            needs.release.result == 'skipped'))
       }}
     runs-on: ubuntu-24.04
     permissions:

@@ -3,7 +3,6 @@ name: actionlint
 on:
   pull_request:
     paths:
-      - ".github/actionlint.yaml"
       - ".github/actions/**"
       - ".github/workflows/**"
       - "ci/github/**"
@@ -13,7 +12,6 @@ on:
     branches:
       - main
     paths:
-      - ".github/actionlint.yaml"
       - ".github/actions/**"
       - ".github/workflows/**"
       - "ci/github/**"

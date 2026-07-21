@@ -1,6 +1,0 @@
-# actionlint v1.7.12 predates GitHub's documented reusable-workflow
-# job.workflow_repository and job.workflow_sha context properties.
-paths:
-  .github/workflows/sitectl-plugin-goreleaser.yaml:
-    ignore:
-      - 'property "workflow_(repository|sha)" is not defined in object type'

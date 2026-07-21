@@ -17,17 +17,12 @@ func pluginReleaseWorkflow(t *testing.T) string {
 
 func releaseJob(t *testing.T) string {
 	t.Helper()
-	return stepBlock(t, pluginReleaseWorkflow(t), "  release:\n", "  homebrew:\n")
+	return stepBlock(t, pluginReleaseWorkflow(t), "  release:\n", "  publish-linux-packages:\n")
 }
 
 func validationJob(t *testing.T) string {
 	t.Helper()
 	return stepBlock(t, pluginReleaseWorkflow(t), "  validate:\n", "  release:\n")
-}
-
-func homebrewJob(t *testing.T) string {
-	t.Helper()
-	return stepBlock(t, pluginReleaseWorkflow(t), "  homebrew:\n", "  publish-linux-packages:\n")
 }
 
 func packageJob(t *testing.T) string {
@@ -40,84 +35,32 @@ func packageJob(t *testing.T) string {
 	return workflow[start:]
 }
 
-func TestReleaseAndRecoveryShareAuthoritativePostReleaseReconciliation(t *testing.T) {
+func TestGoReleaserPublishesReleaseAndHomebrewFormula(t *testing.T) {
 	release := releaseJob(t)
-	homebrew := homebrewJob(t)
 
 	for _, required := range []string{
 		"needs: validate",
 		"if: ${{ inputs.release-mode == 'full' }}",
 		"version: ${{ steps.validate_full.outputs.version }}",
 		"ref: refs/tags/${{ steps.validate_full.outputs.version }}",
-		"args: ${{ inputs.goreleaser-args }} --skip=homebrew",
+		"args: ${{ inputs.goreleaser-args }}",
 		"GITHUB_TOKEN: ${{ github.token }}",
+		"HOMEBREW_REPO_TOKEN: ${{ secrets.HOMEBREW_REPO }}",
 	} {
 		requireContains(t, release, required)
 	}
-	if strings.Contains(release, "HOMEBREW_REPO") || strings.Contains(release, "HOMEBREW_TOKEN") {
-		t.Error("release builder must not receive the Homebrew repository credential")
-	}
-
-	for _, required := range []string{
-		"needs: [validate, release]",
-		"needs.validate.result == 'success'",
-		"inputs.release-mode != 'packages-only'",
-		"inputs.release-mode == 'homebrew-only' && needs.release.result == 'skipped'",
-		"repository: ${{ job.workflow_repository }}",
-		"ref: ${{ job.workflow_sha }}",
-		"persist-credentials: false",
-		`go-version: "1.26.5"`,
-		"cache: false",
-		"go run .libops-workflow/ci/github/homebrew-reconcile/main.go",
-		"GH_TOKEN: ${{ github.token }}",
-		"HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_REPO }}",
-		"RELEASE_VERSION: ${{ inputs.release-mode == 'full' && needs.release.outputs.version || inputs.release-version }}",
-	} {
-		requireContains(t, homebrew, required)
-	}
 	for _, forbidden := range []string{
-		"goreleaser/goreleaser-action",
-		".goreleaser.yaml",
-		"Checkout release source",
-		"inputs.release-version || github.ref }}",
-		"git clone --depth=1 --branch",
+		"--skip=homebrew",
+		"homebrew-reconcile",
+		"HOMEBREW_TOKEN",
 	} {
-		if strings.Contains(homebrew, forbidden) {
-			t.Errorf("Homebrew recovery must not contain caller build behavior %q", forbidden)
+		if strings.Contains(release, forbidden) {
+			t.Errorf("GoReleaser publication contains obsolete Homebrew behavior %q", forbidden)
 		}
 	}
-}
-
-func TestRecoveryResolvesExactReusableWorkflowSource(t *testing.T) {
-	homebrew := homebrewJob(t)
-	checkout := stepBlock(
-		t,
-		homebrew,
-		"      - name: Checkout exact shared reconciliation source\n",
-		"      - name: Verify shared reconciliation source\n",
-	)
-	verify := stepBlock(
-		t,
-		homebrew,
-		"      - name: Verify shared reconciliation source\n",
-		"      - name: Set up Go\n",
-	)
-	for _, required := range []string{
-		"repository: ${{ job.workflow_repository }}",
-		"ref: ${{ job.workflow_sha }}",
-		"persist-credentials: false",
-	} {
-		requireContains(t, checkout, required)
-	}
-	for _, required := range []string{
-		"EXPECTED_SHA: ${{ job.workflow_sha }}",
-		`git -C .libops-workflow rev-parse HEAD`,
-		`[[ "$actual_sha" != "$EXPECTED_SHA" ]]`,
-	} {
-		requireContains(t, verify, required)
-	}
-	if strings.Contains(homebrew, "${{ github.sha }}") || strings.Contains(homebrew, "${{ github.workflow_sha }}") {
-		t.Error("reconciliation source must use the called workflow commit, not the caller commit")
+	workflow := pluginReleaseWorkflow(t)
+	if strings.Contains(workflow, "  homebrew:\n") {
+		t.Error("workflow must not replace GoReleaser's Homebrew publisher")
 	}
 }
 
@@ -131,12 +74,6 @@ func TestReleaseJobsUseLeastPrivilege(t *testing.T) {
 		t.Errorf("release job has unrelated permissions:\n%s", releasePermissions)
 	}
 
-	homebrewPermissions := stepBlock(t, homebrewJob(t), "    permissions:\n", "    steps:\n")
-	requireContains(t, homebrewPermissions, "      contents: read")
-	if strings.Contains(homebrewPermissions, "id-token") || strings.Contains(homebrewPermissions, "contents: write") {
-		t.Errorf("Homebrew job has unrelated automatic-token permissions:\n%s", homebrewPermissions)
-	}
-
 	packagePermissions := stepBlock(t, packageJob(t), "    permissions:\n", "    steps:\n")
 	requireContains(t, packagePermissions, "      contents: read")
 	requireContains(t, packagePermissions, "      id-token: write")
@@ -145,19 +82,20 @@ func TestReleaseJobsUseLeastPrivilege(t *testing.T) {
 	}
 }
 
-func TestPackagesWaitForFullHomebrewReconciliation(t *testing.T) {
+func TestPackagesWaitForGoReleaser(t *testing.T) {
 	packages := packageJob(t)
 	for _, required := range []string{
-		"needs: [validate, release, homebrew]",
+		"needs: [validate, release]",
 		"needs.validate.result == 'success'",
 		"inputs.release-mode == 'full'",
 		"needs.release.result == 'success'",
-		"needs.homebrew.result == 'success'",
 		"inputs.release-mode == 'packages-only'",
 		"needs.release.result == 'skipped'",
-		"needs.homebrew.result == 'skipped'",
 	} {
 		requireContains(t, packages, required)
+	}
+	if strings.Contains(packages, "needs.homebrew") {
+		t.Error("Linux packages must depend on GoReleaser directly")
 	}
 }
 
@@ -300,13 +238,14 @@ func TestReleaseRequestValidationIsCredentialFreeAndExecutable(t *testing.T) {
 		output, err := command.CombinedOutput()
 		return string(output), err
 	}
-	for _, mode := range []string{"full", "homebrew-only", "packages-only"} {
+	for _, mode := range []string{"full", "packages-only"} {
 		if output, err := run(mode, "sitectl-ojs", "libops/sitectl-ojs", "true"); err != nil {
 			t.Fatalf("valid %s request failed: %v\n%s", mode, err, output)
 		}
 	}
 	for name, test := range map[string][4]string{
 		"unknown mode":        {"other", "sitectl-ojs", "libops/sitectl-ojs", "true"},
+		"homebrew-only mode":  {"homebrew-only", "sitectl-ojs", "libops/sitectl-ojs", "true"},
 		"invalid package":     {"full", "Sitectl-OJS", "libops/Sitectl-OJS", "true"},
 		"repeated hyphen":     {"full", "sitectl-ojs--test", "libops/sitectl-ojs--test", "true"},
 		"trailing hyphen":     {"full", "sitectl-ojs-", "libops/sitectl-ojs-", "true"},
@@ -322,13 +261,13 @@ func TestReleaseRequestValidationIsCredentialFreeAndExecutable(t *testing.T) {
 	}
 }
 
-func TestRecoveryCredentialAndConcurrencyContract(t *testing.T) {
+func TestPublicationCredentialAndConcurrencyContract(t *testing.T) {
 	workflow := pluginReleaseWorkflow(t)
 	secrets := stepBlock(t, workflow, "    secrets:\n", "\npermissions: {}\n")
 	for _, required := range []string{
 		"      HOMEBREW_REPO:",
 		"required: true",
-		"contents and pull-request access to libops/homebrew",
+		"used by GoReleaser to publish to libops/homebrew",
 	} {
 		requireContains(t, secrets, required)
 	}
@@ -690,11 +629,6 @@ func TestActionlintRunsAllGoContracts(t *testing.T) {
 	if count := strings.Count(actionlint, `      - "go.mod"`); count != 2 {
 		t.Errorf("actionlint path filters contain go.mod %d times, want pull_request and push", count)
 	}
-	if count := strings.Count(actionlint, `      - ".github/actionlint.yaml"`); count != 2 {
-		t.Errorf("actionlint path filters contain .github/actionlint.yaml %d times, want pull_request and push", count)
-	}
-	actionlintConfig := githubReadFile(t, ".github/actionlint.yaml")
-	requireContains(t, actionlintConfig, `property "workflow_(repository|sha)" is not defined in object type`)
 	checkout := stepBlock(t, actionlint, "      - name: Checkout\n", "      - name: Set up Go\n")
 	requireContains(t, checkout, "persist-credentials: false")
 	requireContains(t, actionlint, "go test ./ci/github/...")
