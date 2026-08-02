@@ -447,6 +447,7 @@ jobs:
             --type local \
             --checkout-source "${CHECKOUT_SOURCE}" \
             --default-context \
+            --yolo \
             "${extra_args[@]}"
 
           if [ "${PLUGIN}" = "isle" ]; then

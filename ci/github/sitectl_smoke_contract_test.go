@@ -26,6 +26,13 @@ func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 	}
 }
 
+func TestSitectlSmokeWorkflowAcceptsResolvedDefaultsNoninteractively(t *testing.T) {
+	workflow := githubReadFile(t, ".github/workflows/sitectl-create-smoke-test.yaml")
+	if !strings.Contains(workflow, "            --yolo \\\n") {
+		t.Error("sitectl create smoke workflow must explicitly accept resolved defaults")
+	}
+}
+
 func TestSitectlSmokeWorkflowCanGateRetainedTemplateProvenance(t *testing.T) {
 	workflow := githubReadFile(t, ".github/workflows/sitectl-create-smoke-test.yaml")
 	for _, required := range []string{
