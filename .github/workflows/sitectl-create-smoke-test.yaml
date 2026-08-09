@@ -341,7 +341,7 @@ jobs:
       - name: Install sitectl
         # Release this workflow only after advancing this SHA to the commit that
         # contains the package-versions contract in install-sitectl.
-        uses: libops/.github/.github/actions/install-sitectl@90a9272d0829c878a682ba636bc155c2b06c7939 # main
+        uses: libops/.github/.github/actions/install-sitectl@86054f5880f0b782dc1c3338895e1755e2c975f1 # main
         with:
           packages: ${{ steps.smoke.outputs.packages }}
           package-versions: ${{ inputs.package-versions }}
