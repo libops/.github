@@ -16,6 +16,9 @@ release and smoke-test jobs:
 installs emit a workflow warning and resolve the newest package available at
 run time.
 
+The action refreshes only the LibOps source list it owns. Unrelated APT sources
+preinstalled on a hosted runner cannot prevent an exact sitectl installation.
+
 ## Archive-key rotation
 
 The action vendors `sitectl-archive-keyring.asc` and checks its complete set of
