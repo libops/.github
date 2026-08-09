@@ -1,10 +1,11 @@
 package github
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 )
+
+const sitectlInstallActionCommit = "86054f5880f0b782dc1c3338895e1755e2c975f1"
 
 func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 	workflow := githubReadFile(t, ".github/workflows/sitectl-create-smoke-test.yaml")
@@ -20,9 +21,9 @@ func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 			t.Errorf("sitectl smoke workflow is missing %q", required)
 		}
 	}
-	actionPin := regexp.MustCompile(`uses: libops/\.github/\.github/actions/install-sitectl@[0-9a-f]{40}`)
-	if !actionPin.MatchString(workflow) {
-		t.Error("install-sitectl action must remain pinned to a full commit SHA")
+	actionPin := "uses: libops/.github/.github/actions/install-sitectl@" + sitectlInstallActionCommit
+	if !strings.Contains(workflow, actionPin) {
+		t.Errorf("install-sitectl action must remain pinned to %s", sitectlInstallActionCommit)
 	}
 }
 
