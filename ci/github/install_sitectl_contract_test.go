@@ -93,6 +93,9 @@ func TestSitectlInstallerPinsEveryAptPackage(t *testing.T) {
 	if !strings.Contains(log, "apt-get install -y sitectl=0.39.0 sitectl-omeka-s=1.2.3-rc.1+build.7") {
 		t.Fatalf("apt install was not fully and deterministically pinned:\n%s", log)
 	}
+	if !strings.Contains(log, "apt-get update -o Dir::Etc::sourcelist=sources.list.d/sitectl.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0") {
+		t.Fatalf("apt metadata refresh was not isolated to the LibOps source:\n%s", log)
+	}
 	if strings.Contains(output, "::warning::") {
 		t.Fatalf("exact install emitted a compatibility warning:\n%s", output)
 	}

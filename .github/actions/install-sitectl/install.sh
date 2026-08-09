@@ -113,5 +113,8 @@ sudo gpg --batch --yes --dearmor \
   "${key_path}"
 echo "deb [signed-by=/usr/share/keyrings/sitectl-archive-keyring.gpg] https://packages.libops.io/sitectl ./" \
   | sudo tee /etc/apt/sources.list.d/sitectl.list >/dev/null
-sudo apt-get update
+sudo apt-get update \
+  -o Dir::Etc::sourcelist="sources.list.d/sitectl.list" \
+  -o Dir::Etc::sourceparts="-" \
+  -o APT::Get::List-Cleanup="0"
 sudo apt-get install -y "${install_args[@]}"
