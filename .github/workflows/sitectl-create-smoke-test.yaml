@@ -33,10 +33,10 @@ on:
         type: string
         default: ""
       run-verify:
-        description: Run sitectl verify after sitectl healthcheck.
+        description: Run strict sitectl verification after sitectl healthcheck.
         required: false
         type: boolean
-        default: false
+        default: true
       verify-args:
         description: Extra arguments passed to sitectl verify.
         required: false
@@ -68,20 +68,20 @@ on:
         type: string
         default: ""
       local-plugin-ref:
-        description: Git ref for local-plugin-repository.
+        description: Exact 40-character commit SHA for local-plugin-repository.
         required: false
         type: string
-        default: main
+        default: ""
       sitectl-repository:
         description: Optional repository to checkout and build as the sitectl host CLI, for example libops/sitectl.
         required: false
         type: string
         default: ""
       sitectl-ref:
-        description: Git ref for sitectl-repository.
+        description: Exact 40-character commit SHA for sitectl-repository.
         required: false
         type: string
-        default: main
+        default: ""
       sitectl-path:
         description: Checkout path for sitectl-repository.
         required: false
@@ -103,10 +103,10 @@ on:
         type: string
         default: ""
       allow-unversioned-packages:
-        description: Permit compatibility installs without package-versions. Disable this for release smoke tests.
+        description: Permit compatibility installs without package-versions. Release-safe smoke tests keep this disabled.
         required: false
         type: boolean
-        default: true
+        default: false
       expected-template-lock-revision:
         description: Require a generated template lock with this component-default revision. Valid only with checkout-source=template.
         required: false
@@ -146,6 +146,7 @@ jobs:
         env:
           LOCAL_PLUGIN_REPOSITORY: ${{ inputs.local-plugin-repository }}
           LOCAL_PLUGIN_PATH: ${{ inputs.local-plugin-path }}
+          LOCAL_PLUGIN_REF: ${{ inputs.local-plugin-ref }}
         run: |
           set -euo pipefail
 
@@ -155,6 +156,10 @@ jobs:
           fi
           if [[ -z "${LOCAL_PLUGIN_PATH// }" || "${LOCAL_PLUGIN_PATH}" = /* || "${LOCAL_PLUGIN_PATH}" = *..* || ! "${LOCAL_PLUGIN_PATH}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid local-plugin-path input: ${LOCAL_PLUGIN_PATH}"
+            exit 1
+          fi
+          if [[ ! "${LOCAL_PLUGIN_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::local-plugin-ref must be an exact 40-character commit SHA"
             exit 1
           fi
 
@@ -265,6 +270,10 @@ jobs:
           sitectl_path="${SITECTL_PATH}"
           if [ -n "${SITECTL_REPOSITORY// }" ]; then
             validate_relative_path "sitectl-path" "${sitectl_path}"
+            if [[ ! "${SITECTL_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::sitectl-ref must be an exact 40-character commit SHA"
+              exit 1
+            fi
           fi
 
           checkout_dir="${GITHUB_WORKSPACE}/${CHECKOUT_PATH}"
@@ -512,7 +521,7 @@ jobs:
           fi
 
           cd "${PROJECT_DIR}"
-          sitectl verify "${verify_args[@]}"
+          sitectl verify --strict "${verify_args[@]}"
 
       - name: Collect docker diagnostics
         if: ${{ failure() && steps.smoke.outcome == 'success' }}

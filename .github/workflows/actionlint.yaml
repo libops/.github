@@ -4,7 +4,9 @@ on:
   pull_request:
     paths:
       - ".github/actions/**"
+      - ".github/compatibility/**"
       - ".github/workflows/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
       - "ci/github/**"
       - "go.mod"
       - "README.md"
@@ -13,7 +15,9 @@ on:
       - main
     paths:
       - ".github/actions/**"
+      - ".github/compatibility/**"
       - ".github/workflows/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
       - "ci/github/**"
       - "go.mod"
       - "README.md"

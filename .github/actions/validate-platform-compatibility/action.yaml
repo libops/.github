@@ -1,0 +1,18 @@
+name: Validate LibOps platform compatibility manifest
+description: Validate an immutable platform release tuple and its test evidence.
+inputs:
+  manifest:
+    description: Repository-relative path to the platform compatibility manifest.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate compatibility manifest
+      shell: bash
+      env:
+        COMPATIBILITY_MANIFEST: ${{ inputs.manifest }}
+      run: |
+        set -euo pipefail
+        node "${GITHUB_ACTION_PATH}/validate.mjs" \
+          --schema "${GITHUB_ACTION_PATH}/../../compatibility/platform-release.schema.json" \
+          "${COMPATIBILITY_MANIFEST}"

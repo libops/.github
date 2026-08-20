@@ -79,9 +79,9 @@ review history; never point a release build at `main`.
 ## sitectl create smoke tests
 
 `.github/workflows/sitectl-create-smoke-test.yaml` exercises a template with the
-published `sitectl` host and plugin packages. Release and compatibility tests
-should pass an exact SemVer for every package so a rerun exercises the same CLI
-bits:
+published `sitectl` host and plugin packages. It defaults to strict plugin
+verification and rejects unversioned packages. Pass an exact SemVer for every
+package so a rerun exercises the same CLI bits:
 
 ```yaml
 jobs:
@@ -92,13 +92,16 @@ jobs:
       packages: sitectl sitectl-omeka-s
       package-versions: sitectl=0.39.0 sitectl-omeka-s=0.6.0
       allow-unversioned-packages: false
+      run-verify: true
 ```
 
 `package-versions` is a one-to-one `package=version` map: missing, duplicate,
-extra, or non-SemVer assignments fail before apt runs. The reusable workflow
-retains `allow-unversioned-packages: true` only for existing callers. That mode
-emits a warning and installs whatever version is newest in the apt repository at
-run time; it is unsuitable for a release gate.
+extra, or non-SemVer assignments fail before apt runs. A caller may explicitly
+set `allow-unversioned-packages: true` only for a non-release compatibility run;
+that mode emits a warning and installs whatever version is newest in the apt
+repository at run time. When source builds are needed, both `sitectl-ref` and
+`local-plugin-ref` must be full commit SHAs. The verify step always adds the
+core-owned `--strict` flag, so a missing or empty plugin verifier fails the run.
 
 The workflow invokes the repository's composite install action through an
 immutable commit SHA. Because this repository squash-merges pull requests, an
@@ -106,6 +109,21 @@ action contract change and its reusable-workflow adoption require two green
 PRs. Merge the action first, capture the resulting main SHA, then pin the
 workflow to that merged SHA in the second PR. Only advertise the second PR's
 merged workflow SHA to callers.
+
+## Platform compatibility manifests
+
+`.github/compatibility/platform-release.schema.json` defines the promotion
+record for one tested platform set. It binds exact sitectl and plugin package
+versions to source commits, a Compose template contract digest, a cloud-compose
+preset commit, container image tag-and-digest references, the shared smoke
+workflow commit, and links to contract/strict-verification runs.
+
+Call the SHA-pinned
+`.github/actions/validate-platform-compatibility` action on a candidate
+manifest before promotion. The validator rejects mutable branches and image
+tags, duplicate application families or service entries, unsupported app
+families, missing verifier checks, and non-run evidence URLs. See
+`.github/compatibility/README.md` for the caller example and lifecycle rules.
 
 ## Pull request status aggregation
 
@@ -174,7 +192,7 @@ jobs:
       GSA: ${{ secrets.GSA }}
 ```
 
-### Keyless signatures
+### Keyless signatures and attestations
 
 Signing is backward compatible and disabled by default. To enable it, the caller grants `id-token: write`, sets `sign: true`, and supplies the exact Fulcio URI for the SHA-pinned reusable workflow in `certificate-identity`:
 
@@ -195,7 +213,9 @@ jobs:
       certificate-identity: https://github.com/libops/.github/.github/workflows/build-push.yaml@FULL_40_CHARACTER_COMMIT_SHA
 ```
 
-The pinned official Cosign installer signs each final manifest by digest in every configured registry, then verifies it before the job can succeed. Before writing a signature, the workflow validates the live GitHub OIDC token's issuer, audience, called workflow, caller workflow, repository, ref, and commit claims. Fulcio's certificate identity represents the called reusable workflow (`job_workflow_ref`). The signed `caller-workflow-ref` annotation records the exact caller workflow path and ref; verification also requires the certificate's caller repository, ref, and commit extensions. This preserves both trust boundaries instead of treating the shared builder as the caller.
+The pinned official Cosign installer signs each final manifest by digest in every configured registry, then verifies it before the job can succeed. The workflow also installs a checksum-pinned Syft release, catalogs both exact `linux/amd64` and `linux/arm64` native digests, attaches independently identified SPDX JSON attestations to the final manifest, and attaches SLSA v1 provenance naming the exact caller commit, workflow, build context, Dockerfile, non-secret build-argument hash, two native digests, and final manifest digest. Every signature and attestation is verified against the same exact builder and caller identity before publication succeeds.
+
+Before any signature or attestation write, the workflow validates the live GitHub OIDC token's issuer, audience, called workflow, caller workflow, repository, ref, and commit claims and repeats the guarded main-tip check when configured. Fulcio's certificate identity represents the called reusable workflow (`job_workflow_ref`). The signed `caller-workflow-ref` annotation records the exact caller workflow path and ref; SPDX attestations also bind a `platform` annotation. Verification requires the certificate's caller repository, ref, and commit extensions. This preserves both trust boundaries instead of treating the shared builder as the caller.
 
 For example, verify an API image with the immutable digest and the values from its publication run:
 
@@ -209,4 +229,24 @@ cosign verify "ghcr.io/libops/api@sha256:IMAGE_DIGEST" \
   -a "caller-workflow-ref=libops/api/.github/workflows/images.yml@refs/heads/main"
 ```
 
-These are image signatures, not provenance attestations. A consumer that requires build provenance must add and verify a separately defined attestation policy.
+Verify the two SBOMs and the provenance with the same certificate and caller
+constraints used above:
+
+```bash
+cosign verify-attestation --type https://spdx.dev/Document \
+  -a platform=linux/amd64 \
+  -a caller-workflow-ref=CALLER_WORKFLOW_REF \
+  --certificate-identity SHARED_WORKFLOW_IDENTITY \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  IMAGE_AT_DIGEST
+
+cosign verify-attestation --type https://slsa.dev/provenance/v1 \
+  -a caller-workflow-ref=CALLER_WORKFLOW_REF \
+  --certificate-identity SHARED_WORKFLOW_IDENTITY \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  IMAGE_AT_DIGEST
+```
+
+Promotion must retain these verification results in the platform compatibility
+manifest. Producing attestations does not replace application, vulnerability,
+hosted-canary, or rollback evidence.

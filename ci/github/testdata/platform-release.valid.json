@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "release": { "id": "2026.8", "status": "candidate" },
+  "sitectl": {
+    "repository": "https://github.com/libops/sitectl",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "package": "sitectl",
+    "version": "1.7.0"
+  },
+  "sharedSmokeWorkflow": {
+    "repository": "https://github.com/libops/.github",
+    "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "applications": [
+    {
+      "family": "archivesspace",
+      "plugin": {
+        "repository": "https://github.com/libops/sitectl-archivesspace",
+        "commit": "cccccccccccccccccccccccccccccccccccccccc",
+        "package": "sitectl-archivesspace",
+        "version": "1.2.0"
+      },
+      "composeTemplate": {
+        "repository": "https://github.com/libops/archivesspace",
+        "commit": "dddddddddddddddddddddddddddddddddddddddd",
+        "contractRevision": "v1",
+        "contractDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "cloudComposePreset": {
+        "repository": "https://github.com/libops/cloud-compose",
+        "commit": "ffffffffffffffffffffffffffffffffffffffff",
+        "preset": "archivesspace"
+      },
+      "images": [
+        {
+          "service": "archivesspace",
+          "reference": "ghcr.io/libops/archivesspace:4.2.0@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "source": {
+            "repository": "https://github.com/libops/archivesspace",
+            "commit": "2222222222222222222222222222222222222222"
+          },
+          "attestations": {
+            "certificateIdentity": "https://github.com/libops/.github/.github/workflows/build-push.yaml@3333333333333333333333333333333333333333",
+            "callerWorkflowRef": "libops/archivesspace/.github/workflows/build.yml@refs/heads/main",
+            "sbom": {
+              "predicateType": "https://spdx.dev/Document",
+              "platforms": ["linux/amd64", "linux/arm64"],
+              "verificationRun": "https://github.com/libops/archivesspace/actions/runs/121"
+            },
+            "provenance": {
+              "predicateType": "https://slsa.dev/provenance/v1",
+              "verificationRun": "https://github.com/libops/archivesspace/actions/runs/122"
+            }
+          }
+        }
+      ],
+      "evidence": {
+        "contractTestRun": "https://github.com/libops/archivesspace/actions/runs/123",
+        "smokeTestRun": "https://github.com/libops/archivesspace/actions/runs/124",
+        "verifyChecks": ["authenticated repository list", "search response"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libops.io/schemas/platform-release.v1.json",
+  "title": "LibOps platform compatibility release",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "release", "sitectl", "sharedSmokeWorkflow", "applications"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "release": { "$ref": "#/$defs/release" },
+    "sitectl": { "$ref": "#/$defs/packageSource" },
+    "sharedSmokeWorkflow": { "$ref": "#/$defs/source" },
+    "applications": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/application" }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "packageSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "package", "version"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "package": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9]{4}\\.[0-9]+(?:\\.[0-9]+)?$" },
+        "status": { "enum": ["candidate", "promoted", "revoked"] }
+      }
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "contractRevision", "contractDigest"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "contractRevision": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "contractDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "cloudComposePreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "preset"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "preset": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "reference", "source", "attestations"],
+      "properties": {
+        "service": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+        "reference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*@sha256:[0-9a-f]{64}$"
+        },
+        "source": { "$ref": "#/$defs/source" },
+        "attestations": { "$ref": "#/$defs/attestations" }
+      }
+    },
+    "attestations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["certificateIdentity", "callerWorkflowRef", "sbom", "provenance"],
+      "properties": {
+        "certificateIdentity": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\\.github/workflows/build-push\\.ya?ml@[0-9a-f]{40}$"
+        },
+        "callerWorkflowRef": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml@\\S+$"
+        },
+        "sbom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["predicateType", "platforms", "verificationRun"],
+          "properties": {
+            "predicateType": { "const": "https://spdx.dev/Document" },
+            "platforms": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": { "enum": ["linux/amd64", "linux/arm64"] }
+            },
+            "verificationRun": { "$ref": "#/$defs/runURL" }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["predicateType", "verificationRun"],
+          "properties": {
+            "predicateType": { "const": "https://slsa.dev/provenance/v1" },
+            "verificationRun": { "$ref": "#/$defs/runURL" }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractTestRun", "smokeTestRun", "verifyChecks"],
+      "properties": {
+        "contractTestRun": { "$ref": "#/$defs/runURL" },
+        "smokeTestRun": { "$ref": "#/$defs/runURL" },
+        "verifyChecks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "runURL": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$"
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "plugin", "composeTemplate", "cloudComposePreset", "images", "evidence"],
+      "properties": {
+        "family": {
+          "enum": ["archivesspace", "drupal", "islandora", "ojs", "omeka-classic", "omeka-s", "wordpress"]
+        },
+        "plugin": { "$ref": "#/$defs/packageSource" },
+        "composeTemplate": { "$ref": "#/$defs/template" },
+        "cloudComposePreset": { "$ref": "#/$defs/cloudComposePreset" },
+        "images": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/image" }
+        },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    }
+  }
+}

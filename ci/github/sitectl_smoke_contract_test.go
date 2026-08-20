@@ -1,6 +1,7 @@
 package github
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,33 @@ func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 	actionPin := "uses: libops/.github/.github/actions/install-sitectl@" + sitectlInstallActionCommit
 	if !strings.Contains(workflow, actionPin) {
 		t.Errorf("install-sitectl action must remain pinned to %s", sitectlInstallActionCommit)
+	}
+}
+
+func TestSitectlSmokeWorkflowDefaultsToImmutableStrictReleaseChecks(t *testing.T) {
+	workflow := githubReadFile(t, ".github/workflows/sitectl-create-smoke-test.yaml")
+	for _, required := range []string{
+		"      run-verify:\n        description: Run strict sitectl verification",
+		"      allow-unversioned-packages:\n        description: Permit compatibility installs",
+		"local-plugin-ref must be an exact 40-character commit SHA",
+		"sitectl-ref must be an exact 40-character commit SHA",
+		"sitectl verify --strict \"${verify_args[@]}\"",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("sitectl smoke workflow is missing strict release contract %q", required)
+		}
+	}
+
+	defaultTrue := regexp.MustCompile(`(?m)^      run-verify:\n(?:        .*\n){3}        default: true$`)
+	if !defaultTrue.MatchString(workflow) {
+		t.Error("run-verify must default to true")
+	}
+	defaultFalse := regexp.MustCompile(`(?m)^      allow-unversioned-packages:\n(?:        .*\n){3}        default: false$`)
+	if !defaultFalse.MatchString(workflow) {
+		t.Error("allow-unversioned-packages must default to false")
+	}
+	if strings.Contains(workflow, "default: main") {
+		t.Error("source checkout refs must not default to the mutable main branch")
 	}
 }
 
