@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import sign_and_attest
 
@@ -89,6 +90,30 @@ class SignAndAttestTest(unittest.TestCase):
                     {"sha256": "c" * 64},
                 ],
             )
+
+    def test_main_guard_retries_transient_responses_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = configuration(Path(directory))
+            responses = iter(("not-a-sha\n", "still-not-a-sha\n", SHA + "\n"))
+            attempts = 0
+
+            def execute(_args: list[str], *, capture: bool = False) -> str:
+                nonlocal attempts
+                self.assertTrue(capture)
+                attempts += 1
+                return next(responses)
+
+            with mock.patch.object(sign_and_attest.time, "sleep") as sleep:
+                sign_and_attest.require_current_main(config, execute)
+            self.assertEqual(attempts, 3)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+
+            def mismatch(_args: list[str], *, capture: bool = False) -> str:
+                self.assertTrue(capture)
+                return "2" * 40 + "\n"
+
+            with self.assertRaisesRegex(RuntimeError, "main advanced"):
+                sign_and_attest.require_current_main(config, mismatch)
 
     def test_sboms_attest_native_manifests_without_unsupported_annotations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -158,26 +158,22 @@ func TestExpectedMainGuardsEveryRegistryWrite(t *testing.T) {
 	workflow := workflowSource(t)
 	push := stepBlock(t, workflow, "      - name: Push verified native image\n", "      - name: Preserve platform digests\n")
 	merge := stepBlock(t, workflow, "      - name: merge platform images\n", "      - name: Verify final manifest parity\n")
-	sign := stepBlock(t, workflow, "      - name: Sign and verify final manifests\n", "\n  cleanup:\n")
 
 	requireContains(t, push, "require_current_main\n            docker push \"$target\"")
 	guardedCreate := regexp.MustCompile(`require_current_main\s+docker buildx imagetools create`)
 	if got := len(guardedCreate.FindAllString(merge, -1)); got != 1 {
 		t.Errorf("want the manifest helper to check current main immediately before its only registry write, got %d guarded writes", got)
 	}
-	requireContains(t, sign, "require_current_main\n            cosign sign --yes")
 }
 
 func TestExpectedMainLookupRetriesTransientResponsesAndFailsClosed(t *testing.T) {
 	workflow := workflowSource(t)
 	push := stepBlock(t, workflow, "      - name: Push verified native image\n", "      - name: Preserve platform digests\n")
 	merge := stepBlock(t, workflow, "      - name: merge platform images\n", "      - name: Verify final manifest parity\n")
-	sign := stepBlock(t, workflow, "      - name: Sign and verify final manifests\n", "\n  cleanup:\n")
 	pushGuard := workflowShellFunction(t, push, "require_current_main", "push_image")
 	mergeGuard := workflowShellFunction(t, merge, "require_current_main", "create_manifest")
-	signGuard := workflowShellFunction(t, sign, "require_current_main", "manifest_digest")
-	if pushGuard != mergeGuard || pushGuard != signGuard {
-		t.Fatal("every publication phase must use the same main-tip guard")
+	if pushGuard != mergeGuard {
+		t.Fatal("native push and manifest merge must use the same main-tip guard")
 	}
 	for _, required := range []string{
 		"for attempt in 1 2 3 4; do",
@@ -474,7 +470,6 @@ func TestAliasesFanOutOneVerifiedBuild(t *testing.T) {
 	push := stepBlock(t, workflow, "      - name: Push verified native image\n", "      - name: Preserve platform digests\n")
 	merge := stepBlock(t, workflow, "      - name: merge platform images\n", "      - name: Verify final manifest parity\n")
 	parity := stepBlock(t, workflow, "      - name: Verify final manifest parity\n", "      - name: Sign and verify final manifests\n")
-	sign := workflow[strings.Index(workflow, "      - name: Sign and verify final manifests\n"):]
 
 	requireContains(t, inputs, `default: "[]"`)
 	requireContains(t, workflow, `type == "array" and length <= 8`)
@@ -485,71 +480,4 @@ func TestAliasesFanOutOneVerifiedBuild(t *testing.T) {
 	requireContains(t, merge, `"additional-alias-${alias_index}"`)
 	requireContains(t, parity, `require_manifest_parity "${PRIMARY_REGISTRY}/${alias_name}"`)
 	requireContains(t, parity, `require_manifest_parity "${ADDITIONAL_GAR_REGISTRY}/${alias_name}"`)
-	requireContains(t, sign, `sign_attest_and_verify "${PRIMARY_REGISTRY}/${alias_name}"`)
-	requireContains(t, sign, `sign_attest_and_verify "${ADDITIONAL_GAR_REGISTRY}/${alias_name}"`)
-}
-
-func TestSigningBindsBuilderAndExactCaller(t *testing.T) {
-	workflow := workflowSource(t)
-	inputs := stepBlock(t, workflow, "      sign:\n", "      workload-identity-provider:\n")
-	sign := workflow[strings.Index(workflow, "      - name: Sign and verify final manifests\n"):]
-
-	requireContains(t, inputs, "default: false")
-	requireContains(t, inputs, "certificate-identity:")
-	requireContains(t, workflow, "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2")
-	requireContains(t, workflow, "build-push\\.ya?ml@[0-9a-fA-F]{40}")
-	requireContains(t, sign, "docker buildx imagetools inspect \"$tagged_ref\"")
-	requireContains(t, sign, "digest_ref=\"${image}@${digest}\"")
-	requireContains(t, sign, "CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}")
-	requireContains(t, sign, `"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore"`)
-	requireContains(t, sign, `.job_workflow_ref == $job_workflow_ref`)
-	requireContains(t, sign, `.workflow_ref == $caller_workflow_ref`)
-	requireContains(t, sign, `.repository == $caller_repository`)
-	requireContains(t, sign, `.ref == $caller_ref`)
-	requireContains(t, sign, `.sha == $caller_sha`)
-	requireContains(t, sign, "validate_oidc_identity\n          write_attestation_predicates\n          sign_attest_and_verify \"$PRIMARY_IMAGE\"")
-	requireContains(t, sign, "--certificate-identity \"$CERTIFICATE_IDENTITY\"")
-	requireContains(t, sign, "--certificate-oidc-issuer \"https://token.actions.githubusercontent.com\"")
-	requireContains(t, sign, "--certificate-github-workflow-repository \"$GITHUB_REPOSITORY\"")
-	requireContains(t, sign, "--certificate-github-workflow-ref \"$GITHUB_REF\"")
-	requireContains(t, sign, "--certificate-github-workflow-sha \"$GITHUB_SHA\"")
-	if got := strings.Count(sign, `-a "caller-workflow-ref=${CALLER_WORKFLOW_REF}"`); got < 6 {
-		t.Errorf("want signatures and both attestation types bound to the exact caller workflow ref, got %d bindings", got)
-	}
-}
-
-func TestSigningProducesAndVerifiesMultiPlatformSBOMAndSLSAProvenance(t *testing.T) {
-	workflow := workflowSource(t)
-	install := stepBlock(t, workflow, "      - name: Install checksum-verified Syft\n", "      - name: Restore platform digests\n")
-	sign := workflow[strings.Index(workflow, "      - name: Sign and verify final manifests\n"):]
-
-	for _, required := range []string{
-		"SYFT_VERSION: 1.50.0",
-		"SYFT_ARCHIVE_SHA256: bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788",
-		"sha256sum --check --strict",
-	} {
-		requireContains(t, install, required)
-	}
-	for _, required := range []string{
-		`syft "${PRIMARY_IMAGE}@${amd64_digest}"`,
-		`--platform linux/amd64`,
-		`syft "${PRIMARY_IMAGE}@${arm64_digest}"`,
-		`--platform linux/arm64`,
-		`buildType: "https://github.com/libops/.github/.github/workflows/build-push.yaml@v1"`,
-		`buildArgsSha256: $build_args_sha256`,
-		`resolvedDependencies: [`,
-		`cosign attest --yes`,
-		`--type https://spdx.dev/Document`,
-		`-a "platform=${platform}"`,
-		`cosign verify-attestation`,
-		`--type https://slsa.dev/provenance/v1`,
-	} {
-		requireContains(t, sign, required)
-	}
-	if got := strings.Count(sign, "require_current_main\n              cosign attest --yes"); got != 1 {
-		t.Errorf("want the looped SPDX attestation write guarded immediately, got %d", got)
-	}
-	if got := strings.Count(sign, "require_current_main\n            cosign attest --yes"); got != 1 {
-		t.Errorf("want the SLSA attestation write guarded immediately, got %d", got)
-	}
 }
