@@ -124,6 +124,9 @@ manifest before promotion. The validator rejects mutable branches and image
 tags, duplicate application families or service entries, unsupported app
 families, missing verifier checks, and non-run evidence URLs. See
 `.github/compatibility/README.md` for the caller example and lifecycle rules.
+The adjacent machine-validated owner map covers every schema leaf and names the
+candidate producer, promoted-manifest signer, promotion approver, signature
+verifier, application evidence approver, and recovery evidence approver.
 
 ## Pull request status aggregation
 

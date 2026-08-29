@@ -15,4 +15,5 @@ runs:
         set -euo pipefail
         node "${GITHUB_ACTION_PATH}/validate.mjs" \
           --schema "${GITHUB_ACTION_PATH}/../../compatibility/platform-release.schema.json" \
+          --owners "${GITHUB_ACTION_PATH}/../../compatibility/platform-release.owners.json" \
           "${COMPATIBILITY_MANIFEST}"

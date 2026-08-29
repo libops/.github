@@ -25,8 +25,9 @@ func TestPlatformReleaseSchemaAndValidatorContract(t *testing.T) {
 	}
 
 	validator := filepath.Join(root, ".github/actions/validate-platform-compatibility/validate.mjs")
+	ownersPath := filepath.Join(root, ".github/compatibility/platform-release.owners.json")
 	valid := filepath.Join(root, "ci/github/testdata/platform-release.valid.json")
-	command := exec.Command("node", validator, "--schema", schemaPath, valid)
+	command := exec.Command("node", validator, "--schema", schemaPath, "--owners", ownersPath, valid)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("valid compatibility manifest rejected: %v\n%s", err, output)
@@ -51,7 +52,8 @@ func TestPlatformReleaseValidatorRejectsMutableImage(t *testing.T) {
 
 	validator := filepath.Join(root, ".github/actions/validate-platform-compatibility/validate.mjs")
 	schemaPath := filepath.Join(root, ".github/compatibility/platform-release.schema.json")
-	command := exec.Command("node", validator, "--schema", schemaPath, invalidPath)
+	ownersPath := filepath.Join(root, ".github/compatibility/platform-release.owners.json")
+	command := exec.Command("node", validator, "--schema", schemaPath, "--owners", ownersPath, invalidPath)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("mutable image unexpectedly accepted: %s", output)
@@ -78,12 +80,41 @@ func TestPlatformReleaseValidatorRejectsIncompleteSBOMCoverage(t *testing.T) {
 
 	validator := filepath.Join(root, ".github/actions/validate-platform-compatibility/validate.mjs")
 	schemaPath := filepath.Join(root, ".github/compatibility/platform-release.schema.json")
-	command := exec.Command("node", validator, "--schema", schemaPath, invalidPath)
+	ownersPath := filepath.Join(root, ".github/compatibility/platform-release.owners.json")
+	command := exec.Command("node", validator, "--schema", schemaPath, "--owners", ownersPath, invalidPath)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		t.Fatalf("incomplete SBOM coverage unexpectedly accepted: %s", output)
 	}
 	if !strings.Contains(string(output), "must contain exactly linux/amd64 and linux/arm64") {
+		t.Fatalf("unexpected validator failure: %s", output)
+	}
+}
+
+func TestPlatformReleaseValidatorRejectsIncompleteOwnerMap(t *testing.T) {
+	root := githubRepositoryRoot(t)
+	ownersPath := filepath.Join(root, ".github/compatibility/platform-release.owners.json")
+	contents, err := os.ReadFile(ownersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents),
+		"    {\"path\": \"/release/status\", \"owner\": \"libops-devsecops\"},\n",
+		"", 1))
+	invalidOwnersPath := filepath.Join(t.TempDir(), "incomplete-owners.json")
+	if err := os.WriteFile(invalidOwnersPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	validator := filepath.Join(root, ".github/actions/validate-platform-compatibility/validate.mjs")
+	schemaPath := filepath.Join(root, ".github/compatibility/platform-release.schema.json")
+	validPath := filepath.Join(root, "ci/github/testdata/platform-release.valid.json")
+	command := exec.Command("node", validator, "--schema", schemaPath, "--owners", invalidOwnersPath, validPath)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("incomplete owner map unexpectedly accepted: %s", output)
+	}
+	if !strings.Contains(string(output), "missing: /release/status") {
 		t.Fatalf("unexpected validator failure: %s", output)
 	}
 }

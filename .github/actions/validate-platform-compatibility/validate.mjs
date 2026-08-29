@@ -7,17 +7,20 @@ function die(message) {
 
 const args = process.argv.slice(2);
 let schemaPath;
+let ownersPath;
 let manifestPath;
 for (let i = 0; i < args.length; i += 1) {
   if (args[i] === "--schema") {
     schemaPath = args[++i];
+  } else if (args[i] === "--owners") {
+    ownersPath = args[++i];
   } else if (!manifestPath) {
     manifestPath = args[i];
   } else {
     die(`unexpected argument ${args[i]}`);
   }
 }
-if (!schemaPath || !manifestPath) die("usage: validate.mjs --schema SCHEMA MANIFEST");
+if (!schemaPath || !ownersPath || !manifestPath) die("usage: validate.mjs --schema SCHEMA --owners OWNERS MANIFEST");
 
 function regularFile(path, name) {
   let stat;
@@ -43,6 +46,7 @@ const schema = readJSON(schemaPath, "schema");
 if (schema.$id !== "https://libops.io/schemas/platform-release.v1.json") {
   die("unsupported schema identity");
 }
+const owners = readJSON(ownersPath, "owner map");
 const manifest = readJSON(manifestPath, "manifest");
 
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -63,6 +67,83 @@ function exactKeys(value, path, required) {
   const expected = [...required].sort();
   if (actual.join("\0") !== expected.join("\0")) {
     die(`${path} keys must be exactly: ${required.join(", ")}`);
+  }
+}
+
+function resolveSchema(node) {
+  if (!object(node) || typeof node.$ref !== "string") return node;
+  if (!node.$ref.startsWith("#/$defs/")) die(`schema contains unsupported reference ${node.$ref}`);
+  const name = node.$ref.slice("#/$defs/".length);
+  const resolved = schema.$defs?.[name];
+  if (!object(resolved)) die(`schema reference ${node.$ref} does not resolve`);
+  return resolved;
+}
+
+function schemaLeafPaths(node, path = "") {
+  const resolved = resolveSchema(node);
+  if (object(resolved.properties)) {
+    return Object.entries(resolved.properties).flatMap(([name, property]) => schemaLeafPaths(property, `${path}/${name}`));
+  }
+  if (resolved.type === "array" && object(resolved.items)) {
+    return schemaLeafPaths(resolved.items, `${path}/*`);
+  }
+  return [path];
+}
+
+exactKeys(owners, "owner map", ["schemaVersion", "schemaId", "fieldOwners", "applicationFamilyOwners", "signingOwners"]);
+if (owners.schemaVersion !== 1 || owners.schemaId !== schema.$id) die("owner map must bind schema version 1 and its exact identity");
+if (!Array.isArray(owners.fieldOwners) || owners.fieldOwners.length === 0) die("owner map fieldOwners must not be empty");
+
+const allowedOwners = new Set([
+  "application-family-owner",
+  "libops-developer-experience",
+  "libops-devsecops",
+  "libops-platform-coo",
+  "libops-platform-engineering",
+  "libops-site-reliability",
+]);
+const declaredOwnerPaths = new Set();
+for (const [index, field] of owners.fieldOwners.entries()) {
+  exactKeys(field, `owner map fieldOwners[${index}]`, ["path", "owner"]);
+  if (typeof field.path !== "string" || !field.path.startsWith("/")) die(`owner map fieldOwners[${index}].path is invalid`);
+  if (!allowedOwners.has(field.owner)) die(`owner map fieldOwners[${index}].owner is not accountable`);
+  if (declaredOwnerPaths.has(field.path)) die(`owner map duplicates ${field.path}`);
+  declaredOwnerPaths.add(field.path);
+}
+
+const schemaPaths = [...new Set(schemaLeafPaths(schema))].sort();
+const ownerPaths = [...declaredOwnerPaths].sort();
+if (schemaPaths.join("\0") !== ownerPaths.join("\0")) {
+  const missing = schemaPaths.filter((path) => !declaredOwnerPaths.has(path));
+  const extra = ownerPaths.filter((path) => !schemaPaths.includes(path));
+  die(`owner map must cover every schema field exactly (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
+}
+
+const signingRoles = [
+  "candidateProducer",
+  "promotedManifestSigner",
+  "promotionApprover",
+  "signatureVerifier",
+  "applicationEvidenceApprover",
+  "recoveryEvidenceApprover",
+];
+exactKeys(owners.signingOwners, "owner map signingOwners", signingRoles);
+for (const role of signingRoles) {
+  if (!allowedOwners.has(owners.signingOwners[role])) die(`owner map signingOwners.${role} is not accountable`);
+}
+
+const applicationOwnerSkills = new Set([
+  "archivesspace-expert",
+  "drupal-expert",
+  "islandora-expert",
+  "ojs-expert",
+  "omeka-expert",
+  "wordpress-expert",
+]);
+exactKeys(owners.applicationFamilyOwners, "owner map applicationFamilyOwners", [...families]);
+for (const family of families) {
+  if (!applicationOwnerSkills.has(owners.applicationFamilyOwners[family])) {
+    die(`owner map applicationFamilyOwners.${family} is not accountable`);
   }
 }
 
