@@ -1,13 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://libops.io/schemas/platform-release.v1.json",
+  "$id": "https://libops.io/schemas/platform-release.v2.json",
   "title": "LibOps platform compatibility release",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "release", "sitectl", "sharedSmokeWorkflow", "applications"],
+  "required": ["schemaVersion", "release", "terraform", "platformImages", "skillsBundle", "hostedEvidence", "sitectl", "sharedSmokeWorkflow", "applications"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "release": { "$ref": "#/$defs/release" },
+    "terraform": { "$ref": "#/$defs/source" },
+    "platformImages": {
+      "type": "array",
+      "minItems": 17,
+      "maxItems": 17,
+      "items": { "$ref": "#/$defs/platformImage" }
+    },
+    "skillsBundle": { "$ref": "#/$defs/skillsBundle" },
+    "hostedEvidence": { "$ref": "#/$defs/hostedEvidence" },
     "sitectl": { "$ref": "#/$defs/packageSource" },
     "sharedSmokeWorkflow": { "$ref": "#/$defs/source" },
     "applications": {
@@ -94,6 +103,70 @@
         },
         "source": { "$ref": "#/$defs/source" },
         "attestations": { "$ref": "#/$defs/attestations" }
+      }
+    },
+    "platformImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "image", "contractTestRun"],
+      "properties": {
+        "component": {
+          "enum": [
+            "api",
+            "api-init",
+            "api-vault-agent",
+            "cli-sandbox",
+            "control-plane",
+            "controller-ingress",
+            "edge-controller",
+            "edge-provider-mutator",
+            "gcp-vm-ip-controller",
+            "ppb",
+            "site-controller",
+            "site-router",
+            "task-agent-model-gateway",
+            "terraform-runner",
+            "vault-init",
+            "vault-proxy",
+            "vault-server"
+          ]
+        },
+        "image": { "$ref": "#/$defs/image" },
+        "contractTestRun": { "$ref": "#/$defs/runURL" }
+      }
+    },
+    "skillsBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "manifestDigest", "contractTestRun"],
+      "properties": {
+        "source": { "$ref": "#/$defs/source" },
+        "manifestDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "contractTestRun": { "$ref": "#/$defs/runURL" }
+      }
+    },
+    "hostedEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "onboardingCujRun",
+        "githubInstallCujRun",
+        "slackInstallCujRun",
+        "vaultRecoveryRun",
+        "edgeRoutingCujRun",
+        "taskAgentCujRun",
+        "mariadbRecoveryRun",
+        "rollbackRun"
+      ],
+      "properties": {
+        "onboardingCujRun": { "$ref": "#/$defs/runURL" },
+        "githubInstallCujRun": { "$ref": "#/$defs/runURL" },
+        "slackInstallCujRun": { "$ref": "#/$defs/runURL" },
+        "vaultRecoveryRun": { "$ref": "#/$defs/runURL" },
+        "edgeRoutingCujRun": { "$ref": "#/$defs/runURL" },
+        "taskAgentCujRun": { "$ref": "#/$defs/runURL" },
+        "mariadbRecoveryRun": { "$ref": "#/$defs/runURL" },
+        "rollbackRun": { "$ref": "#/$defs/runURL" }
       }
     },
     "attestations": {

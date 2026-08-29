@@ -1,12 +1,19 @@
 # Platform compatibility manifests
 
 Every promoted platform release must publish a manifest conforming to
-`platform-release.schema.json`. The manifest is the exact, reviewable set that
-was tested together: sitectl and plugin package versions, source commits,
-Compose template contract digest, cloud-compose preset commit, container image
-digests and source commits, exact shared/caller publisher identities, verified
-SPDX SBOMs for both native platforms, verified SLSA v1 provenance, the shared
-smoke workflow commit, and links to contract and behavioral test evidence.
+`platform-release.schema.json`. Version 2 is the first-customer release
+contract. The manifest is the exact, reviewable set that was tested together:
+
+- the Terraform source commit;
+- all 17 required API, controller, runner, Vault, edge, PPB, Task Agent, and
+  sandbox images, each with source, digest, publisher identity, SBOM,
+  provenance, and contract-test evidence;
+- the canonical skills source commit and embedded-manifest digest;
+- hosted onboarding, GitHub-install, Slack-install, Vault-recovery,
+  edge-routing, Task Agent, MariaDB-recovery, and rollback runs;
+- sitectl and plugin package versions, source commits, Compose template
+  contract digests, cloud-compose preset commits, and the shared smoke workflow
+  commit.
 
 Validate a candidate before promotion:
 
@@ -16,19 +23,21 @@ Validate a candidate before promotion:
     manifest: .libops/platform-release.json
 ```
 
-Tags without digests, images without exact source and attestation evidence,
-movable source commits, incomplete native-platform SBOM coverage, missing
-strict verifier checks, and evidence that is not a GitHub Actions run URL are
-rejected. Application family and image service names must also be unique. A
+Tags without digests, missing first-customer images, images without exact
+source and attestation evidence, mutable skills sources, incomplete hosted
+evidence, movable source commits, incomplete native-platform SBOM coverage,
+missing strict verifier checks, and evidence that is not a GitHub Actions run
+URL are rejected. Application family and image service names must also be unique. A
 candidate may be superseded; a promoted manifest is immutable and must be
 marked `revoked` rather than edited if a released tuple proves unsafe.
 
 `platform-release.owners.json` assigns every leaf field in the schema to one
 accountable owner. The validator derives the leaf paths from the schema and
 fails if the owner map is missing a field, names an extra field, duplicates a
-path, or uses an unrecognized owner. `application-family-owner` resolves through
-the required `family` value to exactly one specialist skill in the same file.
-Schema changes and ownership changes therefore cannot drift independently.
+path, or uses an unrecognized owner. `application-family-owner` and
+`platform-component-owner` resolve through the required family or component to
+exactly one specialist skill in the same file. Schema changes and ownership
+changes therefore cannot drift independently.
 
 ## Signing and approval ownership
 
@@ -37,6 +46,8 @@ Schema changes and ownership changes therefore cannot drift independently.
 - `libops-platform-coo` approves promotion after the release gates are met.
 - The resolved application-family owner approves that application's source,
   package, template, image, and contract evidence.
+- The resolved platform-component owner approves that runtime image's source
+  and contract evidence.
 - `libops-site-reliability` approves smoke, recovery, and hosted-canary
   evidence.
 

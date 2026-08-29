@@ -20,7 +20,7 @@ func TestPlatformReleaseSchemaAndValidatorContract(t *testing.T) {
 	if err := json.Unmarshal(schemaBytes, &schema); err != nil {
 		t.Fatalf("schema is invalid JSON: %v", err)
 	}
-	if schema["$id"] != "https://libops.io/schemas/platform-release.v1.json" {
+	if schema["$id"] != "https://libops.io/schemas/platform-release.v2.json" {
 		t.Fatalf("unexpected schema id: %v", schema["$id"])
 	}
 
@@ -34,6 +34,69 @@ func TestPlatformReleaseSchemaAndValidatorContract(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "validated 2026.8") {
 		t.Fatalf("unexpected validator output: %s", output)
+	}
+}
+
+func TestPlatformReleaseValidatorRejectsMissingFirstCustomerImage(t *testing.T) {
+	root := githubRepositoryRoot(t)
+	validPath := filepath.Join(root, "ci/github/testdata/platform-release.valid.json")
+	contents, err := os.ReadFile(validPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	images := manifest["platformImages"].([]any)
+	manifest["platformImages"] = images[1:]
+	contents, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(t.TempDir(), "missing-platform-image.json")
+	if err := os.WriteFile(invalidPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	validator := filepath.Join(root, ".github/actions/validate-platform-compatibility/validate.mjs")
+	schemaPath := filepath.Join(root, ".github/compatibility/platform-release.schema.json")
+	ownersPath := filepath.Join(root, ".github/compatibility/platform-release.owners.json")
+	command := exec.Command("node", validator, "--schema", schemaPath, "--owners", ownersPath, invalidPath)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("incomplete first-customer image tuple unexpectedly accepted: %s", output)
+	}
+	if !strings.Contains(string(output), "missing: api") {
+		t.Fatalf("unexpected validator failure: %s", output)
+	}
+}
+
+func TestPlatformReleaseValidatorRejectsMutableSkillsSource(t *testing.T) {
+	root := githubRepositoryRoot(t)
+	validPath := filepath.Join(root, "ci/github/testdata/platform-release.valid.json")
+	contents, err := os.ReadFile(validPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = []byte(strings.Replace(string(contents),
+		`"commit": "5555555555555555555555555555555555555555"`,
+		`"commit": "refs/heads/main"`, 1))
+	invalidPath := filepath.Join(t.TempDir(), "mutable-skills.json")
+	if err := os.WriteFile(invalidPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	validator := filepath.Join(root, ".github/actions/validate-platform-compatibility/validate.mjs")
+	schemaPath := filepath.Join(root, ".github/compatibility/platform-release.schema.json")
+	ownersPath := filepath.Join(root, ".github/compatibility/platform-release.owners.json")
+	command := exec.Command("node", validator, "--schema", schemaPath, "--owners", ownersPath, invalidPath)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("mutable skills source unexpectedly accepted: %s", output)
+	}
+	if !strings.Contains(string(output), "skillsBundle.source.commit must be a 40-character lowercase commit SHA") {
+		t.Fatalf("unexpected validator failure: %s", output)
 	}
 }
 
