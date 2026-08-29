@@ -1,5 +1,5 @@
-name: Validate LibOps platform compatibility manifest
-description: Validate an immutable platform release tuple and its test evidence.
+name: Validate LibOps first-customer platform manifest
+description: Validate the immutable first-customer release tuple and its hosted evidence.
 inputs:
   manifest:
     description: Repository-relative path to the platform compatibility manifest.

@@ -113,20 +113,24 @@ merged workflow SHA to callers.
 ## Platform compatibility manifests
 
 `.github/compatibility/platform-release.schema.json` defines the promotion
-record for one tested platform set. It binds exact sitectl and plugin package
-versions to source commits, a Compose template contract digest, a cloud-compose
-preset commit, container image tag-and-digest references, the shared smoke
-workflow commit, and links to contract/strict-verification runs.
+record for one tested first-customer platform set. It binds the Terraform and
+skills source commits, embedded skills-manifest digest, all required managed
+runtime images and attestations, hosted CUJ/recovery/rollback runs, exact
+sitectl and plugin package versions, Compose template contract digests,
+cloud-compose preset commits, and the shared smoke workflow commit.
 
 Call the SHA-pinned
 `.github/actions/validate-platform-compatibility` action on a candidate
-manifest before promotion. The validator rejects mutable branches and image
-tags, duplicate application families or service entries, unsupported app
-families, missing verifier checks, and non-run evidence URLs. See
+manifest before promotion. The validator rejects missing first-customer
+components, mutable branches and image tags, duplicate application families or
+service entries, unsupported app families, incomplete hosted evidence, missing
+verifier checks, and non-run evidence URLs. See
 `.github/compatibility/README.md` for the caller example and lifecycle rules.
-The adjacent machine-validated owner map covers every schema leaf and names the
-candidate producer, promoted-manifest signer, promotion approver, signature
-verifier, application evidence approver, and recovery evidence approver.
+The adjacent machine-validated owner map covers every schema leaf, resolves
+every platform component and application family to an accountable skill, and
+names the candidate producer, promoted-manifest signer, promotion approver,
+signature verifier, application evidence approver, and recovery evidence
+approver.
 
 ## Pull request status aggregation
 

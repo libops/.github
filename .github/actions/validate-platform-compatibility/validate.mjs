@@ -43,7 +43,7 @@ function readJSON(path, name) {
 }
 
 const schema = readJSON(schemaPath, "schema");
-if (schema.$id !== "https://libops.io/schemas/platform-release.v1.json") {
+if (schema.$id !== "https://libops.io/schemas/platform-release.v2.json") {
   die("unsupported schema identity");
 }
 const owners = readJSON(ownersPath, "owner map");
@@ -90,17 +90,23 @@ function schemaLeafPaths(node, path = "") {
   return [path];
 }
 
-exactKeys(owners, "owner map", ["schemaVersion", "schemaId", "fieldOwners", "applicationFamilyOwners", "signingOwners"]);
-if (owners.schemaVersion !== 1 || owners.schemaId !== schema.$id) die("owner map must bind schema version 1 and its exact identity");
+exactKeys(owners, "owner map", ["schemaVersion", "schemaId", "fieldOwners", "applicationFamilyOwners", "platformComponentOwners", "signingOwners"]);
+if (owners.schemaVersion !== 2 || owners.schemaId !== schema.$id) die("owner map must bind schema version 2 and its exact identity");
 if (!Array.isArray(owners.fieldOwners) || owners.fieldOwners.length === 0) die("owner map fieldOwners must not be empty");
 
 const allowedOwners = new Set([
   "application-family-owner",
+  "libops-api-core",
+  "libops-customer-vault",
   "libops-developer-experience",
   "libops-devsecops",
+  "libops-edge-routing",
   "libops-platform-coo",
   "libops-platform-engineering",
+  "libops-provisioning-control-plane",
   "libops-site-reliability",
+  "libops-task-agent-platform",
+  "platform-component-owner",
 ]);
 const declaredOwnerPaths = new Set();
 for (const [index, field] of owners.fieldOwners.entries()) {
@@ -147,6 +153,40 @@ for (const family of families) {
   }
 }
 
+const platformComponents = new Set([
+  "api",
+  "api-init",
+  "api-vault-agent",
+  "cli-sandbox",
+  "control-plane",
+  "controller-ingress",
+  "edge-controller",
+  "edge-provider-mutator",
+  "gcp-vm-ip-controller",
+  "ppb",
+  "site-controller",
+  "site-router",
+  "task-agent-model-gateway",
+  "terraform-runner",
+  "vault-init",
+  "vault-proxy",
+  "vault-server",
+]);
+const platformOwnerSkills = new Set([
+  "libops-api-core",
+  "libops-customer-vault",
+  "libops-edge-routing",
+  "libops-platform-engineering",
+  "libops-provisioning-control-plane",
+  "libops-task-agent-platform",
+]);
+exactKeys(owners.platformComponentOwners, "owner map platformComponentOwners", [...platformComponents]);
+for (const component of platformComponents) {
+  if (!platformOwnerSkills.has(owners.platformComponentOwners[component])) {
+    die(`owner map platformComponentOwners.${component} is not accountable`);
+  }
+}
+
 function source(value, path, extra = []) {
   exactKeys(value, path, ["repository", "commit", ...extra]);
   if (!repository.test(value.repository)) die(`${path}.repository must be an exact GitHub repository URL`);
@@ -159,11 +199,67 @@ function packageSource(value, path) {
   if (!semver.test(value.version)) die(`${path}.version must be exact SemVer without a v prefix`);
 }
 
-exactKeys(manifest, "manifest", ["schemaVersion", "release", "sitectl", "sharedSmokeWorkflow", "applications"]);
-if (manifest.schemaVersion !== 1) die("schemaVersion must be 1");
+function validateImage(item, path) {
+  exactKeys(item, path, ["service", "reference", "source", "attestations"]);
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(item.service)) die(`${path}.service is invalid`);
+  if (!image.test(item.reference)) die(`${path}.reference must contain an exact tag and sha256 digest`);
+  source(item.source, `${path}.source`);
+  const attestationsPath = `${path}.attestations`;
+  exactKeys(item.attestations, attestationsPath, ["certificateIdentity", "callerWorkflowRef", "sbom", "provenance"]);
+  if (!certificateIdentity.test(item.attestations.certificateIdentity)) die(`${attestationsPath}.certificateIdentity must bind the exact shared publisher commit`);
+  if (!callerWorkflowRef.test(item.attestations.callerWorkflowRef)) die(`${attestationsPath}.callerWorkflowRef must identify the caller workflow and ref`);
+  exactKeys(item.attestations.sbom, `${attestationsPath}.sbom`, ["predicateType", "platforms", "verificationRun"]);
+  if (item.attestations.sbom.predicateType !== "https://spdx.dev/Document") die(`${attestationsPath}.sbom.predicateType is invalid`);
+  if (!Array.isArray(item.attestations.sbom.platforms) || [...item.attestations.sbom.platforms].sort().join("\0") !== "linux/amd64\0linux/arm64") {
+    die(`${attestationsPath}.sbom.platforms must contain exactly linux/amd64 and linux/arm64`);
+  }
+  if (!runURL.test(item.attestations.sbom.verificationRun)) die(`${attestationsPath}.sbom.verificationRun is invalid`);
+  exactKeys(item.attestations.provenance, `${attestationsPath}.provenance`, ["predicateType", "verificationRun"]);
+  if (item.attestations.provenance.predicateType !== "https://slsa.dev/provenance/v1") die(`${attestationsPath}.provenance.predicateType is invalid`);
+  if (!runURL.test(item.attestations.provenance.verificationRun)) die(`${attestationsPath}.provenance.verificationRun is invalid`);
+}
+
+exactKeys(manifest, "manifest", ["schemaVersion", "release", "terraform", "platformImages", "skillsBundle", "hostedEvidence", "sitectl", "sharedSmokeWorkflow", "applications"]);
+if (manifest.schemaVersion !== 2) die("schemaVersion must be 2");
 exactKeys(manifest.release, "release", ["id", "status"]);
 if (!/^[0-9]{4}\.[0-9]+(?:\.[0-9]+)?$/.test(manifest.release.id)) die("release.id is invalid");
 if (!["candidate", "promoted", "revoked"].includes(manifest.release.status)) die("release.status is invalid");
+source(manifest.terraform, "terraform");
+if (!Array.isArray(manifest.platformImages)) die("platformImages must be an array");
+const seenPlatformComponents = new Set();
+for (const [index, item] of manifest.platformImages.entries()) {
+  const path = `platformImages[${index}]`;
+  exactKeys(item, path, ["component", "image", "contractTestRun"]);
+  if (!platformComponents.has(item.component)) die(`${path}.component is not required for the first-customer tuple`);
+  if (seenPlatformComponents.has(item.component)) die(`${path}.component duplicates ${item.component}`);
+  seenPlatformComponents.add(item.component);
+  validateImage(item.image, `${path}.image`);
+  const expectedService = item.component === "task-agent-model-gateway" ? "task-agent-ollama-glm-5-2-cloud" : item.component;
+  if (item.image.service !== expectedService) die(`${path}.image.service must be ${expectedService}`);
+  if (!runURL.test(item.contractTestRun)) die(`${path}.contractTestRun is invalid`);
+}
+const missingPlatformComponents = [...platformComponents].filter((component) => !seenPlatformComponents.has(component));
+if (missingPlatformComponents.length > 0 || seenPlatformComponents.size !== platformComponents.size) {
+  die(`platformImages must contain every required component exactly once (missing: ${missingPlatformComponents.join(", ") || "none"})`);
+}
+exactKeys(manifest.skillsBundle, "skillsBundle", ["source", "manifestDigest", "contractTestRun"]);
+source(manifest.skillsBundle.source, "skillsBundle.source");
+if (!digest.test(manifest.skillsBundle.manifestDigest)) die("skillsBundle.manifestDigest must be sha256");
+if (!runURL.test(manifest.skillsBundle.contractTestRun)) die("skillsBundle.contractTestRun is invalid");
+const hostedEvidenceKeys = [
+  "onboardingCujRun",
+  "githubInstallCujRun",
+  "slackInstallCujRun",
+  "vaultRecoveryRun",
+  "edgeRoutingCujRun",
+  "taskAgentCujRun",
+  "mariadbRecoveryRun",
+  "rollbackRun",
+];
+exactKeys(manifest.hostedEvidence, "hostedEvidence", hostedEvidenceKeys);
+for (const name of hostedEvidenceKeys) {
+  if (!runURL.test(manifest.hostedEvidence[name])) die(`hostedEvidence.${name} is invalid`);
+}
 packageSource(manifest.sitectl, "sitectl");
 source(manifest.sharedSmokeWorkflow, "sharedSmokeWorkflow");
 if (!Array.isArray(manifest.applications) || manifest.applications.length === 0) die("applications must not be empty");
@@ -187,25 +283,9 @@ for (const [index, app] of manifest.applications.entries()) {
   const services = new Set();
   for (const [imageIndex, item] of app.images.entries()) {
     const imagePath = `${path}.images[${imageIndex}]`;
-    exactKeys(item, imagePath, ["service", "reference", "source", "attestations"]);
-    if (!/^[a-z0-9][a-z0-9_-]*$/.test(item.service)) die(`${imagePath}.service is invalid`);
     if (services.has(item.service)) die(`${imagePath}.service duplicates ${item.service}`);
     services.add(item.service);
-    if (!image.test(item.reference)) die(`${imagePath}.reference must contain an exact tag and sha256 digest`);
-    source(item.source, `${imagePath}.source`);
-    const attestationsPath = `${imagePath}.attestations`;
-    exactKeys(item.attestations, attestationsPath, ["certificateIdentity", "callerWorkflowRef", "sbom", "provenance"]);
-    if (!certificateIdentity.test(item.attestations.certificateIdentity)) die(`${attestationsPath}.certificateIdentity must bind the exact shared publisher commit`);
-    if (!callerWorkflowRef.test(item.attestations.callerWorkflowRef)) die(`${attestationsPath}.callerWorkflowRef must identify the caller workflow and ref`);
-    exactKeys(item.attestations.sbom, `${attestationsPath}.sbom`, ["predicateType", "platforms", "verificationRun"]);
-    if (item.attestations.sbom.predicateType !== "https://spdx.dev/Document") die(`${attestationsPath}.sbom.predicateType is invalid`);
-    if (!Array.isArray(item.attestations.sbom.platforms) || [...item.attestations.sbom.platforms].sort().join("\0") !== "linux/amd64\0linux/arm64") {
-      die(`${attestationsPath}.sbom.platforms must contain exactly linux/amd64 and linux/arm64`);
-    }
-    if (!runURL.test(item.attestations.sbom.verificationRun)) die(`${attestationsPath}.sbom.verificationRun is invalid`);
-    exactKeys(item.attestations.provenance, `${attestationsPath}.provenance`, ["predicateType", "verificationRun"]);
-    if (item.attestations.provenance.predicateType !== "https://slsa.dev/provenance/v1") die(`${attestationsPath}.provenance.predicateType is invalid`);
-    if (!runURL.test(item.attestations.provenance.verificationRun)) die(`${attestationsPath}.provenance.verificationRun is invalid`);
+    validateImage(item, imagePath);
   }
   exactKeys(app.evidence, `${path}.evidence`, ["contractTestRun", "smokeTestRun", "verifyChecks"]);
   if (!runURL.test(app.evidence.contractTestRun)) die(`${path}.evidence.contractTestRun is invalid`);
