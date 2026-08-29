@@ -48,3 +48,6 @@ jobs:
 
       - name: Validate reusable workflow contracts
         run: go test ./ci/github/...
+
+      - name: Validate image signing behavior
+        run: python3 -B -m unittest discover -s ci/github -p 'test_*.py'
