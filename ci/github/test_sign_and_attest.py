@@ -1,4 +1,5 @@
 import base64
+import dataclasses
 import json
 import tempfile
 import unittest
@@ -23,9 +24,6 @@ def configuration(directory: Path) -> sign_and_attest.Configuration:
         build_context=".",
         caller_ref=SHA,
         caller_workflow_ref="libops/example/.github/workflows/push.yaml@refs/heads/main",
-        certificate_identity=(
-            "https://github.com/libops/.github/.github/workflows/build-push.yaml@" + SHA
-        ),
         digest_dir=directory,
         dockerfile="Dockerfile",
         expected_main_sha=SHA,
@@ -34,6 +32,9 @@ def configuration(directory: Path) -> sign_and_attest.Configuration:
         github_run_attempt="1",
         github_run_id="42",
         github_sha=SHA,
+        job_workflow_ref=(
+            "libops/.github/.github/workflows/build-push.yaml@refs/heads/main"
+        ),
         oidc_request_token="token",
         oidc_request_url="https://example.invalid/oidc?x=1",
         primary_image="ghcr.io/libops/example",
@@ -48,15 +49,13 @@ def configuration(directory: Path) -> sign_and_attest.Configuration:
 
 
 class SignAndAttestTest(unittest.TestCase):
-    def test_oidc_claims_bind_pinned_builder_and_exact_caller(self) -> None:
+    def test_oidc_claims_bind_managed_builder_and_exact_caller(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = configuration(Path(directory))
             claims = {
                 "aud": "sigstore",
                 "iss": sign_and_attest.OIDC_ISSUER,
-                "job_workflow_ref": config.certificate_identity.removeprefix(
-                    "https://github.com/"
-                ),
+                "job_workflow_ref": config.job_workflow_ref,
                 "workflow_ref": config.caller_workflow_ref,
                 "repository": config.github_repository,
                 "ref": config.github_ref,
@@ -66,6 +65,20 @@ class SignAndAttestTest(unittest.TestCase):
             claims["sha"] = "2" * 40
             with self.assertRaisesRegex(ValueError, "sha"):
                 sign_and_attest.validate_oidc_claims(config, claims)
+
+    def test_managed_builder_rejects_sha_pins_and_foreign_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = configuration(Path(directory))
+            for workflow_ref in (
+                "libops/.github/.github/workflows/build-push.yaml@" + SHA,
+                "someone-else/.github/.github/workflows/build-push.yaml@refs/heads/main",
+            ):
+                with self.subTest(workflow_ref=workflow_ref):
+                    with self.assertRaises(ValueError):
+                        sign_and_attest.trusted_workflow_identity(workflow_ref)
+                    invalid_config = dataclasses.replace(config, job_workflow_ref=workflow_ref)
+                    with self.assertRaises(ValueError):
+                        sign_and_attest.validate_oidc_claims(invalid_config, {})
 
     def test_jwt_decoder_accepts_base64url_without_padding(self) -> None:
         payload = base64.urlsafe_b64encode(json.dumps({"aud": "sigstore"}).encode()).decode()
@@ -81,6 +94,9 @@ class SignAndAttestTest(unittest.TestCase):
                 FINAL_DIGEST,
             )
             dependencies = provenance["buildDefinition"]["resolvedDependencies"]
+            self.assertEqual(
+                provenance["buildDefinition"]["buildType"], config.certificate_identity
+            )
             self.assertEqual(
                 [dependency["digest"] for dependency in dependencies],
                 [

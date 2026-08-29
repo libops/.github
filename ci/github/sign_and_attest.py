@@ -20,6 +20,7 @@ from typing import Callable, Mapping, Sequence
 DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+TRUSTED_WORKFLOW_PREFIX = "libops/.github/.github/workflows/build-push.yaml@"
 
 
 def command(args: Sequence[str], *, capture: bool = False) -> str:
@@ -48,7 +49,6 @@ class Configuration:
     build_context: str
     caller_ref: str
     caller_workflow_ref: str
-    certificate_identity: str
     digest_dir: Path
     dockerfile: str
     expected_main_sha: str
@@ -57,6 +57,7 @@ class Configuration:
     github_run_attempt: str
     github_run_id: str
     github_sha: str
+    job_workflow_ref: str
     oidc_request_token: str
     oidc_request_url: str
     primary_image: str
@@ -80,7 +81,6 @@ class Configuration:
             build_context=required(environment, "BUILD_CONTEXT"),
             caller_ref=environment.get("CALLER_REF", ""),
             caller_workflow_ref=required(environment, "CALLER_WORKFLOW_REF"),
-            certificate_identity=required(environment, "CERTIFICATE_IDENTITY"),
             digest_dir=Path(required(environment, "DIGEST_DIR")),
             dockerfile=required(environment, "DOCKER_FILE"),
             expected_main_sha=environment.get("EXPECTED_MAIN_SHA", ""),
@@ -89,6 +89,7 @@ class Configuration:
             github_run_attempt=required(environment, "GITHUB_RUN_ATTEMPT"),
             github_run_id=required(environment, "GITHUB_RUN_ID"),
             github_sha=required(environment, "GITHUB_SHA"),
+            job_workflow_ref=required(environment, "JOB_WORKFLOW_REF"),
             oidc_request_token=required(environment, "ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
             oidc_request_url=required(environment, "ACTIONS_ID_TOKEN_REQUEST_URL"),
             primary_image=required(environment, "PRIMARY_IMAGE"),
@@ -100,6 +101,19 @@ class Configuration:
             },
             provenance_path=Path(required(environment, "SLSA_PROVENANCE_PATH")),
         )
+
+    @property
+    def certificate_identity(self) -> str:
+        return trusted_workflow_identity(self.job_workflow_ref)
+
+
+def trusted_workflow_identity(job_workflow_ref: str) -> str:
+    if not job_workflow_ref.startswith(TRUSTED_WORKFLOW_PREFIX):
+        raise ValueError("signing must run from the managed LibOps build-push workflow")
+    ref = job_workflow_ref.removeprefix(TRUSTED_WORKFLOW_PREFIX)
+    if not (ref.startswith("refs/heads/") or ref.startswith("refs/tags/")):
+        raise ValueError("the managed build-push workflow must be called by branch or tag")
+    return "https://github.com/" + job_workflow_ref
 
 
 def decode_jwt_claims(token: str) -> Mapping[str, object]:
@@ -117,13 +131,11 @@ def decode_jwt_claims(token: str) -> Mapping[str, object]:
 
 
 def validate_oidc_claims(config: Configuration, claims: Mapping[str, object]) -> None:
-    identity_prefix = "https://github.com/"
-    if not config.certificate_identity.startswith(identity_prefix):
-        raise ValueError("CERTIFICATE_IDENTITY must be a GitHub workflow identity")
+    trusted_workflow_identity(config.job_workflow_ref)
     expected = {
         "aud": "sigstore",
         "iss": OIDC_ISSUER,
-        "job_workflow_ref": config.certificate_identity.removeprefix(identity_prefix),
+        "job_workflow_ref": config.job_workflow_ref,
         "workflow_ref": config.caller_workflow_ref,
         "repository": config.github_repository,
         "ref": config.github_ref,
@@ -132,7 +144,7 @@ def validate_oidc_claims(config: Configuration, claims: Mapping[str, object]) ->
     mismatches = [name for name, value in expected.items() if claims.get(name) != value]
     if mismatches:
         raise ValueError(
-            "GitHub OIDC identity does not match the pinned builder and exact caller: "
+            "GitHub OIDC identity does not match the managed builder and exact caller: "
             + ", ".join(mismatches)
         )
 
@@ -244,7 +256,7 @@ def build_provenance(
         raise ValueError("cannot create provenance from a non-immutable source ref")
     return {
         "buildDefinition": {
-            "buildType": "https://github.com/libops/.github/.github/workflows/build-push.yaml@v1",
+            "buildType": config.certificate_identity,
             "externalParameters": {
                 "repository": config.github_repository,
                 "sourceCommit": source_commit.lower(),

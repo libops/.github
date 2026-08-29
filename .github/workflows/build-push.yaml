@@ -65,11 +65,6 @@ on:
         type: boolean
         default: false
         description: "Keylessly sign and verify each final multi-platform manifest (caller needs id-token: write)"
-      certificate-identity:
-        required: false
-        type: string
-        default: ""
-        description: "Exact Fulcio URI for the SHA-pinned reusable build-push workflow; required when sign is true"
       workload-identity-provider:
         required: false
         type: string
@@ -113,13 +108,11 @@ jobs:
           ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
           BUILD_CONTEXT: ${{ inputs.context }}
           CALLER_REF: ${{ inputs.ref }}
-          CERTIFICATE_IDENTITY: ${{ inputs.certificate-identity }}
           DOCKER_FILE: ${{ inputs.file }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
           IMAGE_NAME: ${{ inputs.image }}
           REGISTRY_PREFIX: ${{ inputs.docker-registry }}
           RUNNERS: ${{ inputs.runners }}
-          SIGN: ${{ inputs.sign }}
           TAG_OVERRIDE: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -169,10 +162,6 @@ jobs:
               echo "Expected main SHA requires the same exact caller ref"
               exit 1
             fi
-          fi
-          if [[ "$SIGN" == true && ! "$CERTIFICATE_IDENTITY" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/build-push\.ya?ml@[0-9a-fA-F]{40}$ ]]; then
-            echo "Signing requires the exact Fulcio identity of a SHA-pinned build-push reusable workflow" >&2
-            exit 1
           fi
           if [[ -n "$ADDITIONAL_GAR_REGISTRY" ]]; then
             if [[ ! "$ADDITIONAL_GAR_REGISTRY" =~ ^[A-Za-z0-9-]+\.pkg\.dev/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
@@ -265,8 +254,8 @@ jobs:
 
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
-          repository: libops/.github
-          ref: 7595f77ff8668a80b13662f090010d3ae84cdfa1
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
           path: gha
           sparse-checkout: |
             ci/github/extract-docker-vars.sh
@@ -605,8 +594,8 @@ jobs:
 
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
-          repository: libops/.github
-          ref: 7595f77ff8668a80b13662f090010d3ae84cdfa1
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
           path: gha
           sparse-checkout: |
             ci/github/extract-docker-vars.sh
@@ -819,11 +808,11 @@ jobs:
           BUILD_CONTEXT: ${{ inputs.context }}
           CALLER_REF: ${{ inputs.ref }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
-          CERTIFICATE_IDENTITY: ${{ inputs.certificate-identity }}
           DIGEST_DIR: ${{ runner.temp }}/build-digests
           DOCKER_FILE: ${{ inputs.file }}
           EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
           GH_TOKEN: ${{ inputs.expected-main-sha != '' && github.token || '' }}
+          JOB_WORKFLOW_REF: ${{ fromJSON(toJSON(job)).workflow_ref }}
           PRIMARY_IMAGE: ${{ steps.metadata.outputs.primary-image }}
           PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
           PUBLICATION_TAG: ${{ steps.metadata.outputs.tag }}
@@ -847,8 +836,8 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         if: needs.merge.result == 'success'
         with:
-          repository: libops/.github
-          ref: 7595f77ff8668a80b13662f090010d3ae84cdfa1
+          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}
+          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}
           path: gha
           sparse-checkout: |
             ci/github/extract-docker-vars.sh
