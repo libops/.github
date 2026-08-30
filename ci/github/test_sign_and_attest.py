@@ -333,6 +333,17 @@ class SignAndAttestTest(unittest.TestCase):
                     },
                 )
 
+            mutable_builder = dataclasses.replace(
+                config,
+                job_workflow_sha="refs/heads/main",
+            )
+            with self.assertRaisesRegex(ValueError, "exact commit"):
+                sign_and_attest.build_publication_record(
+                    mutable_builder,
+                    {"amd64": AMD64_DIGEST, "arm64": ARM64_DIGEST},
+                    FINAL_DIGEST,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

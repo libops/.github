@@ -488,6 +488,71 @@ def publication_images(config: Configuration) -> tuple[str, ...]:
     return tuple(images)
 
 
+def build_publication_record(
+    config: Configuration,
+    native_digests: Mapping[str, str],
+    final_digest: str,
+) -> Mapping[str, object]:
+    source_commit = config.caller_ref or config.github_sha
+    if not COMMIT_PATTERN.fullmatch(source_commit):
+        raise ValueError("cannot record publication from a non-immutable source ref")
+    validated_native_digests = {
+        f"linux/{architecture}": validate_digest(native_digests[architecture])
+        for architecture in ("amd64", "arm64")
+    }
+    validated_final_digest = validate_digest(final_digest)
+    builder_commit = config.resolved_builder_identity.rsplit("@", 1)[1]
+    source = {
+        "repository": f"https://github.com/{config.github_repository}",
+        "commit": source_commit.lower(),
+    }
+    publisher = {
+        "certificateIdentity": config.certificate_identity,
+        "builderCommit": builder_commit,
+        "callerWorkflowRef": config.caller_workflow_ref,
+    }
+    publication_run = (
+        f"https://github.com/{config.github_repository}/actions/runs/"
+        f"{config.github_run_id}"
+    )
+    attestations = {
+        **publisher,
+        "sbom": {
+            "predicateType": "https://spdx.dev/Document",
+            "platforms": ["linux/amd64", "linux/arm64"],
+            "verificationRun": publication_run,
+        },
+        "provenance": {
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "verificationRun": publication_run,
+        },
+    }
+    return {
+        "schemaVersion": 1,
+        "source": source,
+        "publisher": publisher,
+        "publicationRun": publication_run,
+        "nativeDigests": validated_native_digests,
+        "images": [
+            {
+                "reference": (
+                    f"{image}:{config.publication_tag}@{validated_final_digest}"
+                ),
+                "source": source,
+                "attestations": attestations,
+            }
+            for image in publication_images(config)
+        ],
+    }
+
+
+def write_publication_record(
+    path: Path,
+    record: Mapping[str, object],
+) -> None:
+    path.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+
+
 def main() -> int:
     config = Configuration.from_environment(os.environ)
     validate_oidc_claims(config, request_oidc_claims(config))
@@ -499,6 +564,10 @@ def main() -> int:
         if image_digest != final_digest:
             raise ValueError(f"{image} does not match the verified primary manifest")
         sign_attest_and_verify(config, native_digests, image, image_digest)
+    write_publication_record(
+        Path(required(os.environ, "PUBLICATION_RECORD_PATH")),
+        build_publication_record(config, native_digests, final_digest),
+    )
     return 0
 
 

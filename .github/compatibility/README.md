@@ -52,7 +52,26 @@ changes therefore cannot drift independently.
   evidence.
 
 These are accountable roles, not long-lived signing keys. The promoted-manifest
-signer must use a short-lived GitHub Actions OIDC identity bound to a reviewed,
-SHA-pinned workflow. A candidate manifest is not promoted merely because it
-validates. Until that signer and its verification receipt are present, retain
-the manifest as `candidate`; do not represent it as an immutable signed release.
+signer must use a short-lived GitHub Actions OIDC identity bound to the reviewed
+managed workflow ref and record the exact resolved workflow commit. A candidate
+manifest is not promoted merely because it validates. Until that signer and its
+verification receipt are present, retain the manifest as `candidate`; do not
+represent it as an immutable signed release.
+
+## Publication evidence input
+
+Every signed invocation of the shared `build-push` workflow uploads a
+`publication-record-...` artifact for 90 days and exposes its artifact ID,
+GitHub-reported artifact digest, and authenticated URL as reusable-workflow
+outputs. The JSON record contains the exact caller source commit, managed
+publisher identity, resolved publisher commit, caller workflow, hosted run,
+native image digests, final tag-plus-digest references, and verified SBOM and
+provenance evidence for every registry alias.
+
+The record is generated only after every final image has the same digest and
+its signature and attestations verify. Manifest producers should consume these
+records, add component-owned contract evidence, and validate the assembled
+candidate. Do not copy the resolved publisher commit back into a caller's
+`uses:` reference: LibOps callers stay on the managed `@main` channel, while
+the generated record preserves the immutable identity used for release and
+rollback evidence.
