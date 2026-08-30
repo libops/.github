@@ -6,8 +6,8 @@ contract. The manifest is the exact, reviewable set that was tested together:
 
 - the Terraform source commit;
 - all 17 required API, controller, runner, Vault, edge, PPB, Task Agent, and
-  sandbox images, each with source, digest, publisher identity, SBOM,
-  provenance, and contract-test evidence;
+  sandbox images, each with source, digest, managed publisher identity, exact
+  runtime-resolved builder commit, SBOM, provenance, and contract-test evidence;
 - the canonical skills source commit and embedded-manifest digest;
 - hosted onboarding, GitHub-install, Slack-install, Vault-recovery,
   edge-routing, Task Agent, MariaDB-recovery, and rollback runs;

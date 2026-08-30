@@ -57,7 +57,7 @@ const packageName = /^[a-z0-9][a-z0-9-]*$/;
 const digest = /^sha256:[0-9a-f]{64}$/;
 const image = /^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*@sha256:[0-9a-f]{64}$/;
 const runURL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/[0-9]+$/;
-const certificateIdentity = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/build-push\.ya?ml@[0-9a-f]{40}$/;
+const certificateIdentity = /^https:\/\/github\.com\/libops\/\.github\/\.github\/workflows\/build-push\.yaml@refs\/(heads|tags)\/[A-Za-z0-9._/-]+$/;
 const callerWorkflowRef = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@\S+$/;
 const families = new Set(["archivesspace", "drupal", "islandora", "ojs", "omeka-classic", "omeka-s", "wordpress"]);
 
@@ -205,8 +205,9 @@ function validateImage(item, path) {
   if (!image.test(item.reference)) die(`${path}.reference must contain an exact tag and sha256 digest`);
   source(item.source, `${path}.source`);
   const attestationsPath = `${path}.attestations`;
-  exactKeys(item.attestations, attestationsPath, ["certificateIdentity", "callerWorkflowRef", "sbom", "provenance"]);
-  if (!certificateIdentity.test(item.attestations.certificateIdentity)) die(`${attestationsPath}.certificateIdentity must bind the exact shared publisher commit`);
+  exactKeys(item.attestations, attestationsPath, ["certificateIdentity", "builderCommit", "callerWorkflowRef", "sbom", "provenance"]);
+  if (!certificateIdentity.test(item.attestations.certificateIdentity)) die(`${attestationsPath}.certificateIdentity must bind a managed shared-publisher ref`);
+  if (!sha.test(item.attestations.builderCommit)) die(`${attestationsPath}.builderCommit must bind the exact resolved shared-publisher commit`);
   if (!callerWorkflowRef.test(item.attestations.callerWorkflowRef)) die(`${attestationsPath}.callerWorkflowRef must identify the caller workflow and ref`);
   exactKeys(item.attestations.sbom, `${attestationsPath}.sbom`, ["predicateType", "platforms", "verificationRun"]);
   if (item.attestations.sbom.predicateType !== "https://spdx.dev/Document") die(`${attestationsPath}.sbom.predicateType is invalid`);

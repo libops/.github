@@ -172,11 +172,15 @@
     "attestations": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["certificateIdentity", "callerWorkflowRef", "sbom", "provenance"],
+      "required": ["certificateIdentity", "builderCommit", "callerWorkflowRef", "sbom", "provenance"],
       "properties": {
         "certificateIdentity": {
           "type": "string",
-          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\\.github/workflows/build-push\\.ya?ml@[0-9a-f]{40}$"
+          "pattern": "^https://github\\.com/libops/\\.github/\\.github/workflows/build-push\\.yaml@refs/(heads|tags)/[A-Za-z0-9._/-]+$"
+        },
+        "builderCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
         },
         "callerWorkflowRef": {
           "type": "string",
