@@ -88,6 +88,16 @@ on:
       DOCKERHUB_PASSWORD:
         required: false
         description: "Docker Hub token, required only when Docker Hub is the primary registry"
+    outputs:
+      publication-record-artifact-id:
+        description: "Artifact ID for the verified publication record; empty when signing is disabled"
+        value: ${{ jobs.merge.outputs.publication-record-artifact-id }}
+      publication-record-artifact-digest:
+        description: "SHA-256 digest reported by GitHub for the publication-record artifact"
+        value: ${{ jobs.merge.outputs.publication-record-artifact-digest }}
+      publication-record-artifact-url:
+        description: "Authenticated GitHub URL for the publication-record artifact"
+        value: ${{ jobs.merge.outputs.publication-record-artifact-url }}
 jobs:
   build:
     strategy:
@@ -490,6 +500,10 @@ jobs:
     timeout-minutes: 30
     needs:
       - build
+    outputs:
+      publication-record-artifact-id: ${{ steps.publication-record.outputs.artifact-id }}
+      publication-record-artifact-digest: ${{ steps.publication-record.outputs.artifact-digest }}
+      publication-record-artifact-url: ${{ steps.publication-record.outputs.artifact-url }}
     steps:
       - name: Resolve registry host
         id: registry
@@ -757,10 +771,21 @@ jobs:
           PRIMARY_IMAGE: ${{ steps.metadata.outputs.primary-image }}
           PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
           PUBLICATION_TAG: ${{ steps.metadata.outputs.tag }}
+          PUBLICATION_RECORD_PATH: ${{ runner.temp }}/publication-record.json
           SBOM_AMD64_PATH: ${{ runner.temp }}/final-image.linux-amd64.spdx.json
           SBOM_ARM64_PATH: ${{ runner.temp }}/final-image.linux-arm64.spdx.json
           SLSA_PROVENANCE_PATH: ${{ runner.temp }}/final-image.slsa-provenance.json
         run: python3 gha/ci/github/sign_and_attest.py
+
+      - name: Preserve verified publication record
+        id: publication-record
+        if: inputs.sign
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: publication-record-${{ steps.metadata.outputs.artifact-name }}
+          path: ${{ runner.temp }}/publication-record.json
+          if-no-files-found: error
+          retention-days: 90
 
   cleanup:
     name: cleanup-staging-tags

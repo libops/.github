@@ -256,3 +256,11 @@ cosign verify-attestation --type https://slsa.dev/provenance/v1 \
 Promotion must retain these verification results in the platform compatibility
 manifest. Producing attestations does not replace application, vulnerability,
 hosted-canary, or rollback evidence.
+
+Each signed invocation also retains a machine-readable publication record for
+90 days. Reusable-workflow outputs expose the record's artifact ID, GitHub
+artifact digest, and authenticated URL. The record contains the exact source,
+resolved builder, caller workflow, native and final image digests, and the
+verified attestation evidence needed by a platform-release candidate. It is a
+generated evidence artifact, not a source pin: LibOps callers continue to use
+the managed `build-push.yaml@main` channel.
