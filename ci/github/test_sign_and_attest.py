@@ -270,6 +270,69 @@ class SignAndAttestTest(unittest.TestCase):
                 ),
             )
 
+    def test_publication_record_retains_resolved_release_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = configuration(Path(directory))
+            record = sign_and_attest.build_publication_record(
+                config,
+                {"amd64": AMD64_DIGEST, "arm64": ARM64_DIGEST},
+                FINAL_DIGEST,
+            )
+
+            self.assertEqual(record["schemaVersion"], 1)
+            self.assertEqual(
+                record["source"],
+                {
+                    "repository": "https://github.com/libops/example",
+                    "commit": SHA,
+                },
+            )
+            self.assertEqual(
+                record["publisher"],
+                {
+                    "certificateIdentity": config.certificate_identity,
+                    "builderCommit": SHA,
+                    "callerWorkflowRef": config.caller_workflow_ref,
+                },
+            )
+            self.assertEqual(
+                record["publicationRun"],
+                "https://github.com/libops/example/actions/runs/42",
+            )
+            self.assertEqual(
+                record["nativeDigests"],
+                {
+                    "linux/amd64": AMD64_DIGEST,
+                    "linux/arm64": ARM64_DIGEST,
+                },
+            )
+            self.assertEqual(
+                [image["reference"] for image in record["images"]],
+                [
+                    f"ghcr.io/libops/example:main@{FINAL_DIGEST}",
+                    f"us-docker.pkg.dev/libops/primary:main@{FINAL_DIGEST}",
+                    f"ghcr.io/libops/alias:main@{FINAL_DIGEST}",
+                    f"us-docker.pkg.dev/libops/alias:main@{FINAL_DIGEST}",
+                ],
+            )
+            for image in record["images"]:
+                self.assertEqual(image["source"], record["source"])
+                self.assertEqual(
+                    image["attestations"],
+                    {
+                        **record["publisher"],
+                        "sbom": {
+                            "predicateType": "https://spdx.dev/Document",
+                            "platforms": ["linux/amd64", "linux/arm64"],
+                            "verificationRun": record["publicationRun"],
+                        },
+                        "provenance": {
+                            "predicateType": "https://slsa.dev/provenance/v1",
+                            "verificationRun": record["publicationRun"],
+                        },
+                    },
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
