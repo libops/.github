@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-const sitectlInstallActionCommit = "86054f5880f0b782dc1c3338895e1755e2c975f1"
-
 func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 	workflow := githubReadFile(t, ".github/workflows/sitectl-create-smoke-test.yaml")
 	for _, required := range []string{
@@ -15,16 +13,16 @@ func TestSitectlSmokeWorkflowExposesAndWiresExactVersions(t *testing.T) {
 		"      allow-unversioned-packages:\n",
 		"          package-versions: ${{ inputs.package-versions }}",
 		"          allow-unversioned: ${{ inputs.allow-unversioned-packages }}",
+		"          repository: ${{ fromJSON(toJSON(job)).workflow_repository }}",
+		"          ref: ${{ fromJSON(toJSON(job)).workflow_sha }}",
+		"          sparse-checkout: .github/actions/install-sitectl",
+		"        uses: ./gha/.github/actions/install-sitectl",
 		"echo \"package-versions=${PACKAGE_VERSIONS}\"",
 		"echo \"allow-unversioned-packages=${ALLOW_UNVERSIONED_PACKAGES}\"",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("sitectl smoke workflow is missing %q", required)
 		}
-	}
-	actionPin := "uses: libops/.github/.github/actions/install-sitectl@" + sitectlInstallActionCommit
-	if !strings.Contains(workflow, actionPin) {
-		t.Errorf("install-sitectl action must remain pinned to %s", sitectlInstallActionCommit)
 	}
 }
 

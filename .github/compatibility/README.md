@@ -18,7 +18,7 @@ contract. The manifest is the exact, reviewable set that was tested together:
 Validate a candidate before promotion:
 
 ```yaml
-- uses: libops/.github/.github/actions/validate-platform-compatibility@FULL_40_CHARACTER_COMMIT_SHA
+- uses: libops/.github/.github/actions/validate-platform-compatibility@main
   with:
     manifest: .libops/platform-release.json
 ```

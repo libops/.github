@@ -36,6 +36,7 @@ def configuration(directory: Path) -> sign_and_attest.Configuration:
         job_workflow_ref=(
             "libops/.github/.github/workflows/build-push.yaml@refs/heads/main"
         ),
+        job_workflow_sha=SHA,
         oidc_request_token="token",
         oidc_request_url="https://example.invalid/oidc?x=1",
         primary_image="ghcr.io/libops/example",
@@ -63,12 +64,17 @@ class SignAndAttestTest(unittest.TestCase):
                 "aud": "sigstore",
                 "iss": sign_and_attest.OIDC_ISSUER,
                 "job_workflow_ref": config.job_workflow_ref,
+                "job_workflow_sha": SHA,
                 "workflow_ref": config.caller_workflow_ref,
                 "repository": config.github_repository,
                 "ref": config.github_ref,
                 "sha": config.github_sha,
             }
             sign_and_attest.validate_oidc_claims(config, claims)
+            claims["job_workflow_sha"] = "2" * 40
+            with self.assertRaisesRegex(ValueError, "job_workflow_sha"):
+                sign_and_attest.validate_oidc_claims(config, claims)
+            claims["job_workflow_sha"] = SHA
             claims["sha"] = "2" * 40
             with self.assertRaisesRegex(ValueError, "sha"):
                 sign_and_attest.validate_oidc_claims(config, claims)
@@ -87,6 +93,16 @@ class SignAndAttestTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         sign_and_attest.validate_oidc_claims(invalid_config, {})
 
+    def test_managed_builder_requires_an_exact_resolved_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = dataclasses.replace(
+                configuration(Path(directory)), job_workflow_sha="refs/heads/main"
+            )
+            with self.assertRaisesRegex(ValueError, "exact commit"):
+                _ = config.resolved_builder_identity
+            with self.assertRaisesRegex(ValueError, "exact commit"):
+                sign_and_attest.validate_oidc_claims(config, {})
+
     def test_jwt_decoder_accepts_base64url_without_padding(self) -> None:
         payload = base64.urlsafe_b64encode(json.dumps({"aud": "sigstore"}).encode()).decode()
         token = "header." + payload.rstrip("=") + ".signature"
@@ -102,16 +118,42 @@ class SignAndAttestTest(unittest.TestCase):
             )
             dependencies = provenance["buildDefinition"]["resolvedDependencies"]
             self.assertEqual(
-                provenance["buildDefinition"]["buildType"], config.certificate_identity
+                provenance["buildDefinition"]["buildType"],
+                config.resolved_builder_identity,
+            )
+            self.assertEqual(
+                provenance["runDetails"]["builder"]["id"],
+                config.resolved_builder_identity,
+            )
+            self.assertEqual(
+                [dependency["uri"] for dependency in dependencies],
+                [
+                    "git+https://github.com/libops/example.git",
+                    (
+                        "git+https://github.com/libops/.github.git"
+                        "#path=.github/workflows/build-push.yaml"
+                    ),
+                    "oci:libops-native?platform=linux/amd64",
+                    "oci:libops-native?platform=linux/arm64",
+                    "oci:libops-final-manifest",
+                ],
             )
             self.assertEqual(
                 [dependency["digest"] for dependency in dependencies],
                 [
                     {"gitCommit": SHA},
+                    {"gitCommit": SHA},
                     {"sha256": "a" * 64},
                     {"sha256": "b" * 64},
                     {"sha256": "c" * 64},
                 ],
+            )
+            self.assertEqual(
+                provenance["buildDefinition"]["internalParameters"],
+                {
+                    "callerWorkflowRef": config.caller_workflow_ref,
+                    "jobWorkflowRef": config.job_workflow_ref,
+                },
             )
 
     def test_main_guard_retries_transient_responses_and_fails_closed(self) -> None:

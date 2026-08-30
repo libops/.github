@@ -94,6 +94,7 @@ class Configuration:
     github_run_id: str
     github_sha: str
     job_workflow_ref: str
+    job_workflow_sha: str
     oidc_request_token: str
     oidc_request_url: str
     primary_image: str
@@ -126,6 +127,7 @@ class Configuration:
             github_run_id=required(environment, "GITHUB_RUN_ID"),
             github_sha=required(environment, "GITHUB_SHA"),
             job_workflow_ref=required(environment, "JOB_WORKFLOW_REF"),
+            job_workflow_sha=required(environment, "JOB_WORKFLOW_SHA"),
             oidc_request_token=required(environment, "ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
             oidc_request_url=required(environment, "ACTIONS_ID_TOKEN_REQUEST_URL"),
             primary_image=required(environment, "PRIMARY_IMAGE"),
@@ -141,6 +143,16 @@ class Configuration:
     @property
     def certificate_identity(self) -> str:
         return trusted_workflow_identity(self.job_workflow_ref)
+
+    @property
+    def resolved_builder_identity(self) -> str:
+        if not COMMIT_PATTERN.fullmatch(self.job_workflow_sha):
+            raise ValueError("the managed build-push workflow must resolve to an exact commit")
+        return (
+            "https://github.com/"
+            + TRUSTED_WORKFLOW_PREFIX
+            + self.job_workflow_sha.lower()
+        )
 
 
 def trusted_workflow_identity(job_workflow_ref: str) -> str:
@@ -168,10 +180,12 @@ def decode_jwt_claims(token: str) -> Mapping[str, object]:
 
 def validate_oidc_claims(config: Configuration, claims: Mapping[str, object]) -> None:
     trusted_workflow_identity(config.job_workflow_ref)
+    config.resolved_builder_identity
     expected = {
         "aud": "sigstore",
         "iss": OIDC_ISSUER,
         "job_workflow_ref": config.job_workflow_ref,
+        "job_workflow_sha": config.job_workflow_sha,
         "workflow_ref": config.caller_workflow_ref,
         "repository": config.github_repository,
         "ref": config.github_ref,
@@ -292,7 +306,7 @@ def build_provenance(
         raise ValueError("cannot create provenance from a non-immutable source ref")
     return {
         "buildDefinition": {
-            "buildType": config.certificate_identity,
+            "buildType": config.resolved_builder_identity,
             "externalParameters": {
                 "repository": config.github_repository,
                 "sourceCommit": source_commit.lower(),
@@ -301,11 +315,21 @@ def build_provenance(
                 "dockerfile": config.dockerfile,
                 "publicationTag": config.publication_tag,
             },
-            "internalParameters": {"callerWorkflowRef": config.caller_workflow_ref},
+            "internalParameters": {
+                "callerWorkflowRef": config.caller_workflow_ref,
+                "jobWorkflowRef": config.job_workflow_ref,
+            },
             "resolvedDependencies": [
                 {
                     "uri": f"git+https://github.com/{config.github_repository}.git",
                     "digest": {"gitCommit": source_commit.lower()},
+                },
+                {
+                    "uri": (
+                        "git+https://github.com/libops/.github.git"
+                        "#path=.github/workflows/build-push.yaml"
+                    ),
+                    "digest": {"gitCommit": config.job_workflow_sha.lower()},
                 },
                 {
                     "uri": "oci:libops-native?platform=linux/amd64",
@@ -322,7 +346,7 @@ def build_provenance(
             ],
         },
         "runDetails": {
-            "builder": {"id": config.certificate_identity},
+            "builder": {"id": config.resolved_builder_identity},
             "metadata": {
                 "invocationId": (
                     f"https://github.com/{config.github_repository}/actions/runs/"

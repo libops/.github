@@ -156,7 +156,7 @@ func TestPRStatusCallerContractIsDocumented(t *testing.T) {
 		"    if: ${{ always() }}\n",
 		"    needs: [lint, test]\n",
 		"    permissions: {}\n",
-		"    uses: libops/.github/.github/workflows/pr-status.yaml@FULL_40_CHARACTER_COMMIT_SHA\n",
+		"    uses: libops/.github/.github/workflows/pr-status.yaml@main\n",
 		"      needs-json: ${{ toJSON(needs) }}\n",
 		"`run / merge`",
 	} {

@@ -753,6 +753,7 @@ jobs:
           EXPECTED_MAIN_SHA: ${{ inputs.expected-main-sha }}
           GH_TOKEN: ${{ inputs.expected-main-sha != '' && github.token || '' }}
           JOB_WORKFLOW_REF: ${{ fromJSON(toJSON(job)).workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ fromJSON(toJSON(job)).workflow_sha }}
           PRIMARY_IMAGE: ${{ steps.metadata.outputs.primary-image }}
           PRIMARY_REGISTRY: ${{ inputs.docker-registry }}
           PUBLICATION_TAG: ${{ steps.metadata.outputs.tag }}

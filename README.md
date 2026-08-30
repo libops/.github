@@ -59,7 +59,7 @@ on:
 
 jobs:
   release:
-    uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    uses: libops/.github/.github/workflows/sitectl-plugin-goreleaser.yaml@main
     permissions:
       contents: write
       id-token: write
@@ -86,7 +86,7 @@ package so a rerun exercises the same CLI bits:
 ```yaml
 jobs:
   smoke:
-    uses: libops/.github/.github/workflows/sitectl-create-smoke-test.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    uses: libops/.github/.github/workflows/sitectl-create-smoke-test.yaml@main
     with:
       plugin: omeka-s
       packages: sitectl sitectl-omeka-s
@@ -156,7 +156,7 @@ jobs:
     if: ${{ always() }}
     needs: [lint, test]
     permissions: {}
-    uses: libops/.github/.github/workflows/pr-status.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    uses: libops/.github/.github/workflows/pr-status.yaml@main
     with:
       needs-json: ${{ toJSON(needs) }}
 ```
@@ -193,7 +193,7 @@ The reusable workflow declares four optional secrets so callers can pass only wh
 ```yaml
 jobs:
   image:
-    uses: libops/.github/.github/workflows/build-push.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    uses: libops/.github/.github/workflows/build-push.yaml@main
     secrets:
       GCLOUD_OIDC_POOL: ${{ secrets.GCLOUD_OIDC_POOL }}
       GSA: ${{ secrets.GSA }}
@@ -201,7 +201,7 @@ jobs:
 
 ### Keyless signatures and attestations
 
-Signing is backward compatible and disabled by default. To enable it, the caller grants `id-token: write`, sets `sign: true`, and supplies the exact Fulcio URI for the SHA-pinned reusable workflow in `certificate-identity`:
+Signing is backward compatible and disabled by default. To enable it, the caller grants `id-token: write` and sets `sign: true`. LibOps callers follow the managed `main` channel; the publisher derives the immutable workflow commit at runtime instead of requiring a copied source pin:
 
 ```yaml
 permissions:
@@ -211,24 +211,23 @@ permissions:
 
 jobs:
   image:
-    uses: libops/.github/.github/workflows/build-push.yaml@FULL_40_CHARACTER_COMMIT_SHA
+    uses: libops/.github/.github/workflows/build-push.yaml@main
     with:
       image: example
       additional-image-names: '["example-dashboard"]'
       scan: true
       sign: true
-      certificate-identity: https://github.com/libops/.github/.github/workflows/build-push.yaml@FULL_40_CHARACTER_COMMIT_SHA
 ```
 
-The pinned official Cosign installer signs each final manifest by digest in every configured registry, then verifies it before the job can succeed. The workflow also installs a checksum-pinned Syft release, catalogs both exact `linux/amd64` and `linux/arm64` native digests, attaches independently identified SPDX JSON attestations to the final manifest, and attaches SLSA v1 provenance naming the exact caller commit, workflow, build context, Dockerfile, non-secret build-argument hash, two native digests, and final manifest digest. Every signature and attestation is verified against the same exact builder and caller identity before publication succeeds.
+The SHA-pinned official Cosign installer signs each final manifest by digest in every configured registry, then verifies it before the job can succeed. The workflow also installs a checksum-pinned Syft release, catalogs both exact `linux/amd64` and `linux/arm64` native digests, attaches independently identified SPDX JSON attestations to the native manifests, and attaches SLSA v1 provenance naming the exact caller commit, resolved builder commit, managed workflow ref, build context, Dockerfile, non-secret build-argument hash, two native digests, and final manifest digest. Every signature and attestation is verified against the same caller identity before publication succeeds.
 
-Before any signature or attestation write, the workflow validates the live GitHub OIDC token's issuer, audience, called workflow, caller workflow, repository, ref, and commit claims and repeats the guarded main-tip check when configured. Fulcio's certificate identity represents the called reusable workflow (`job_workflow_ref`). The signed `caller-workflow-ref` annotation records the exact caller workflow path and ref; SPDX attestations also bind a `platform` annotation. Verification requires the certificate's caller repository, ref, and commit extensions. This preserves both trust boundaries instead of treating the shared builder as the caller.
+Before any signature or attestation write, the workflow validates the live GitHub OIDC token's issuer, audience, called workflow ref, resolved called-workflow commit (`job_workflow_sha`), caller workflow, repository, ref, and commit claims and repeats the guarded main-tip check when configured. Fulcio's certificate identity represents the managed called-workflow ref (`job_workflow_ref`); the signed SLSA predicate records the exact resolved builder commit as both `buildType`/builder identity and a Git dependency. The signed `caller-workflow-ref` annotation records the exact caller workflow path and ref. Verification requires the certificate's caller repository, ref, and commit extensions. This preserves both trust boundaries while keeping mutable LibOps refs out of hand-maintained source configuration.
 
 For example, verify an API image with the immutable digest and the values from its publication run:
 
 ```bash
 cosign verify "ghcr.io/libops/api@sha256:IMAGE_DIGEST" \
-  --certificate-identity "https://github.com/libops/.github/.github/workflows/build-push.yaml@SHARED_WORKFLOW_COMMIT" \
+  --certificate-identity "https://github.com/libops/.github/.github/workflows/build-push.yaml@refs/heads/main" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   --certificate-github-workflow-repository "libops/api" \
   --certificate-github-workflow-ref "refs/heads/main" \

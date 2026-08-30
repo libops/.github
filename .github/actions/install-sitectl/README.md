@@ -5,7 +5,7 @@ This composite action installs `sitectl` apt packages from
 release and smoke-test jobs:
 
 ```yaml
-- uses: libops/.github/.github/actions/install-sitectl@FULL_40_CHARACTER_COMMIT_SHA
+- uses: libops/.github/.github/actions/install-sitectl@main
   with:
     packages: sitectl sitectl-omeka-s
     package-versions: sitectl=0.39.0 sitectl-omeka-s=0.6.0
@@ -39,11 +39,12 @@ Rotate the key through a dedicated reviewed change:
 2. Replace the ASCII keyring, update the approved fingerprint array in
    `install.sh`, and update its contract-test constant together.
 3. Keep the prior key in the repository keyring and keep repository metadata
-   valid for it during a migration window if SHA-pinned callers still need to
-   install newly published packages.
-4. Merge the action change and capture the resulting main commit SHA. In a
-   separate PR, pin reusable workflows to that merged SHA. Do not pin a commit
+   valid for it during a migration window while managed callers advance through
+   `main`.
+4. Merge the action change. Reusable workflows consume `main` and check out the
+   resolved workflow commit at runtime for release evidence. Do not publish a key
    from a squash-merged PR because GitHub discards that commit from main.
 
-Callers pinning older action commits deliberately retain the older trust root;
-coordinate package-signing overlap and caller migration before retiring it.
+Supported release channels that have not yet advanced retain the older trust
+root; coordinate package-signing overlap and channel migration before retiring
+it.
