@@ -1,6 +1,7 @@
 import base64
 import dataclasses
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -174,6 +175,39 @@ class SignAndAttestTest(unittest.TestCase):
             signature = next(call for call in calls if call[:2] == ["cosign", "sign"])
             self.assertEqual(signature[-1], f"{config.primary_image}@{FINAL_DIGEST}")
             self.assertIn("-a", signature)
+
+    def test_cosign_retries_transient_failures_and_rechecks_main(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = configuration(Path(directory))
+            sign_attempts = 0
+            guards = 0
+
+            def execute(args: list[str], *, capture: bool = False) -> str:
+                nonlocal sign_attempts
+                self.assertFalse(capture)
+                if args[:2] == ["cosign", "sign"]:
+                    sign_attempts += 1
+                    if sign_attempts < 3:
+                        raise subprocess.CalledProcessError(1, args)
+                return ""
+
+            def guard() -> None:
+                nonlocal guards
+                guards += 1
+
+            with mock.patch.object(sign_and_attest.time, "sleep") as sleep:
+                sign_and_attest.sign_attest_and_verify(
+                    config,
+                    {"amd64": AMD64_DIGEST, "arm64": ARM64_DIGEST},
+                    config.primary_image,
+                    FINAL_DIGEST,
+                    execute=execute,
+                    guard=guard,
+                )
+
+            self.assertEqual(sign_attempts, 3)
+            self.assertEqual(guards, 6)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
 
     def test_publication_images_include_primary_mirror_and_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

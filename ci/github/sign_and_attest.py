@@ -21,6 +21,7 @@ DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 TRUSTED_WORKFLOW_PREFIX = "libops/.github/.github/workflows/build-push.yaml@"
+COSIGN_ATTEMPTS = 4
 
 
 def command(args: Sequence[str], *, capture: bool = False) -> str:
@@ -31,6 +32,29 @@ def command(args: Sequence[str], *, capture: bool = False) -> str:
         stdout=subprocess.PIPE if capture else None,
     )
     return result.stdout if capture else ""
+
+
+def retry_cosign(
+    args: Sequence[str],
+    *,
+    execute: Callable[..., str] = command,
+    before_attempt: Callable[[], None] | None = None,
+) -> None:
+    for attempt in range(COSIGN_ATTEMPTS):
+        if before_attempt is not None:
+            before_attempt()
+        try:
+            execute(args)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == COSIGN_ATTEMPTS - 1:
+                raise
+            print(
+                f"Cosign {args[1]} attempt {attempt + 1}/{COSIGN_ATTEMPTS} failed; retrying",
+                file=sys.stderr,
+            )
+            time.sleep(2**attempt)
+    raise AssertionError("unreachable")
 
 
 def required(environment: Mapping[str, str], name: str) -> str:
@@ -352,14 +376,19 @@ def sign_attest_and_verify(
     caller_annotation = f"caller-workflow-ref={config.caller_workflow_ref}"
     verification = certificate_verification_args(config)
 
-    guard()
-    execute(["cosign", "sign", "--yes", "-a", caller_annotation, final_ref])
-    execute(["cosign", "verify", *verification, "-a", caller_annotation, final_ref])
+    retry_cosign(
+        ["cosign", "sign", "--yes", "-a", caller_annotation, final_ref],
+        execute=execute,
+        before_attempt=guard,
+    )
+    retry_cosign(
+        ["cosign", "verify", *verification, "-a", caller_annotation, final_ref],
+        execute=execute,
+    )
 
     for architecture in ("amd64", "arm64"):
         native_ref = f"{image}@{native_digests[architecture]}"
-        guard()
-        execute(
+        retry_cosign(
             [
                 "cosign",
                 "attest",
@@ -369,9 +398,11 @@ def sign_attest_and_verify(
                 "--predicate",
                 str(config.sbom_paths[architecture]),
                 native_ref,
-            ]
+            ],
+            execute=execute,
+            before_attempt=guard,
         )
-        execute(
+        retry_cosign(
             [
                 "cosign",
                 "verify-attestation",
@@ -379,11 +410,11 @@ def sign_attest_and_verify(
                 "https://spdx.dev/Document",
                 *verification,
                 native_ref,
-            ]
+            ],
+            execute=execute,
         )
 
-    guard()
-    execute(
+    retry_cosign(
         [
             "cosign",
             "attest",
@@ -393,9 +424,11 @@ def sign_attest_and_verify(
             "--predicate",
             str(config.provenance_path),
             final_ref,
-        ]
+        ],
+        execute=execute,
+        before_attempt=guard,
     )
-    execute(
+    retry_cosign(
         [
             "cosign",
             "verify-attestation",
@@ -403,7 +436,8 @@ def sign_attest_and_verify(
             "https://slsa.dev/provenance/v1",
             *verification,
             final_ref,
-        ]
+        ],
+        execute=execute,
     )
 
 
