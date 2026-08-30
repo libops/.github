@@ -21,7 +21,8 @@ DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 TRUSTED_WORKFLOW_PREFIX = "libops/.github/.github/workflows/build-push.yaml@"
-COSIGN_ATTEMPTS = 4
+COSIGN_ATTEMPTS = 8
+COSIGN_MAX_RETRY_DELAY_SECONDS = 30
 
 
 def command(args: Sequence[str], *, capture: bool = False) -> str:
@@ -53,7 +54,7 @@ def retry_cosign(
                 f"Cosign {args[1]} attempt {attempt + 1}/{COSIGN_ATTEMPTS} failed; retrying",
                 file=sys.stderr,
             )
-            time.sleep(2**attempt)
+            time.sleep(min(5 * (2**attempt), COSIGN_MAX_RETRY_DELAY_SECONDS))
     raise AssertionError("unreachable")
 
 

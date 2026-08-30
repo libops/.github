@@ -187,7 +187,7 @@ class SignAndAttestTest(unittest.TestCase):
                 self.assertFalse(capture)
                 if args[:2] == ["cosign", "sign"]:
                     sign_attempts += 1
-                    if sign_attempts < 3:
+                    if sign_attempts < 5:
                         raise subprocess.CalledProcessError(1, args)
                 return ""
 
@@ -205,9 +205,9 @@ class SignAndAttestTest(unittest.TestCase):
                     guard=guard,
                 )
 
-            self.assertEqual(sign_attempts, 3)
-            self.assertEqual(guards, 6)
-            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+            self.assertEqual(sign_attempts, 5)
+            self.assertEqual(guards, 8)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10, 20, 30])
 
     def test_publication_images_include_primary_mirror_and_aliases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
