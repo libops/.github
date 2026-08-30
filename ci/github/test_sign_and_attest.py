@@ -50,6 +50,12 @@ def configuration(directory: Path) -> sign_and_attest.Configuration:
 
 
 class SignAndAttestTest(unittest.TestCase):
+    def test_successful_cosign_verification_does_not_emit_attestation_payloads(self) -> None:
+        with mock.patch.object(sign_and_attest.subprocess, "run") as run:
+            run.return_value.stdout = None
+            sign_and_attest.command(["cosign", "verify-attestation", "image@sha256:digest"])
+        self.assertEqual(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
+
     def test_oidc_claims_bind_managed_builder_and_exact_caller(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = configuration(Path(directory))

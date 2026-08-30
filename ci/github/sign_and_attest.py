@@ -26,11 +26,22 @@ COSIGN_MAX_RETRY_DELAY_SECONDS = 30
 
 
 def command(args: Sequence[str], *, capture: bool = False) -> str:
+    suppress_success_output = (
+        len(args) > 1
+        and args[0] == "cosign"
+        and args[1] in {"verify", "verify-attestation"}
+    )
     result = subprocess.run(
         args,
         check=True,
         text=True,
-        stdout=subprocess.PIPE if capture else None,
+        stdout=(
+            subprocess.PIPE
+            if capture
+            else subprocess.DEVNULL
+            if suppress_success_output
+            else None
+        ),
     )
     return result.stdout if capture else ""
 
