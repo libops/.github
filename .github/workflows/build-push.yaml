@@ -628,6 +628,8 @@ jobs:
       - name: Install Cosign
         if: inputs.sign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3 # renovate: datasource=github-releases depName=sigstore/cosign
 
       - name: Install checksum-verified Syft
         if: inputs.sign

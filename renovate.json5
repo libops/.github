@@ -3,5 +3,17 @@
   extends: [
     'github>libops/renovate-config:default.json5',
   ],
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Update the Cosign release installed by the reusable image publisher',
+      managerFilePatterns: [
+        '/^\.github/workflows/build-push\.yaml$/',
+      ],
+      matchStrings: [
+        'cosign-release:\\s*(?<currentValue>\\S+)\\s+# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)',
+      ],
+      versioningTemplate: 'semver-coerced',
+    },
+  ],
 }
-
