@@ -176,7 +176,7 @@ Set `additional-image-names` to a JSON array such as `["dash"]` when multiple pa
 
 The publication modes are:
 
-- The compatibility mode (`scan: false` and no `expected-main-sha`) may write a BuildKit registry cache while it pushes an attempt-specific native image.
+- Compatibility mode (no `expected-main-sha`) may write a BuildKit registry cache while it pushes an attempt-specific native image.
 - A scanned or main-tip-guarded build first loads the image locally. It may read `cache-from`, but it cannot export a registry cache or image until the scan and current-main check pass.
 - `expected-main-sha` is checked immediately before each native image, final manifest, and signature write. This narrows the race but does not make two independent registries transactional.
 
@@ -215,7 +215,6 @@ jobs:
     with:
       image: example
       additional-image-names: '["example-dashboard"]'
-      scan: true
       sign: true
 ```
 

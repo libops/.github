@@ -55,11 +55,6 @@ on:
         type: string
         default: "[]"
         description: "JSON array of alias image names published from the same build under every configured registry prefix"
-      scan:
-        required: false
-        type: boolean
-        default: false
-        description: "Scan each exact native platform image with Trivy before publishing it"
       sign:
         required: false
         type: boolean
@@ -353,7 +348,7 @@ jobs:
 
       - name: build+push
         id: push-direct
-        if: ${{ !inputs.scan && inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' && steps.registry.outputs.has-aliases != 'true' }}
+        if: ${{ inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' && steps.registry.outputs.has-aliases != 'true' }}
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: ${{ steps.paths.outputs.context }}
@@ -369,7 +364,7 @@ jobs:
             ${{ steps.metadata.outputs.primary-platform-ref }}
 
       - name: Build native image for verified publication
-        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' || steps.registry.outputs.has-aliases == 'true' }}
+        if: ${{ inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' || steps.registry.outputs.has-aliases == 'true' }}
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: ${{ steps.paths.outputs.context }}
@@ -384,19 +379,8 @@ jobs:
             GIT_BRANCH=${{ steps.metadata.outputs.tag }}
           tags: ${{ steps.metadata.outputs.local-image }}
 
-      - name: Scan exact native image
-        if: inputs.scan
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ steps.metadata.outputs.local-image }}
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
-
       - name: Record directly pushed platform digest
-        if: ${{ !inputs.scan && inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' && steps.registry.outputs.has-aliases != 'true' }}
+        if: ${{ inputs.additional-gar-registry == '' && inputs.expected-main-sha == '' && steps.registry.outputs.has-aliases != 'true' }}
         env:
           DIGEST: ${{ steps.push-direct.outputs.digest }}
           PLATFORM: ${{ steps.vars.outputs.platform }}
@@ -430,7 +414,7 @@ jobs:
 
       - name: Push verified native image
         id: push-verified
-        if: ${{ inputs.scan || inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' || steps.registry.outputs.has-aliases == 'true' }}
+        if: ${{ inputs.additional-gar-registry != '' || inputs.expected-main-sha != '' || steps.registry.outputs.has-aliases == 'true' }}
         env:
           ADDITIONAL_GAR_REGISTRY: ${{ inputs.additional-gar-registry }}
           ADDITIONAL_IMAGE_NAMES: ${{ inputs.additional-image-names }}
